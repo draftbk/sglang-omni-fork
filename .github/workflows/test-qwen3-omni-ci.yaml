@@ -16,7 +16,7 @@ jobs:
   docs:
     name: docs
     runs-on: [self-hosted]
-    timeout-minutes: 30
+    timeout-minutes: 15
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -54,7 +54,7 @@ jobs:
     name: stage 1 - TTS speed + WER
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 90
+    timeout-minutes: 15
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -95,7 +95,7 @@ jobs:
     name: stage 2 - MMMU accuracy + speed
     needs: stage-1-tts
     runs-on: [self-hosted]
-    timeout-minutes: 90
+    timeout-minutes: 20
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -135,7 +135,7 @@ jobs:
     name: stage 3 - MMMU TTS consistency
     needs: stage-2-mmmu
     runs-on: [self-hosted]
-    timeout-minutes: 90
+    timeout-minutes: 15
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
