@@ -38,6 +38,7 @@ from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, build_pipeline_runner
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.utils import find_available_port
 
 logger = logging.getLogger(__name__)
 
