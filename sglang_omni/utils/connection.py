@@ -15,13 +15,16 @@ def find_available_port(host: str = "127.0.0.1", port: int = None) -> int:
     Returns:
         The available port.
     """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((host, port))
-            return port
-    except OSError:
-        pass
-    logger.warning(f"Port {port} is already in use on {host}.")
+    if port is not None:
+        # check if the given port can be used
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((host, port))
+                return port
+        except OSError:
+            logger.warning(f"Port {port} is already in use on {host}.")
+
+    # find the available port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         free_port = s.getsockname()[1]
