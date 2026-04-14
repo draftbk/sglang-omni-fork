@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Network connection utilities."""
+
 from __future__ import annotations
 
 import logging
@@ -30,5 +33,9 @@ def find_available_port(host: str = "0.0.0.0", port: int | None = None) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         free_port = s.getsockname()[1]
-    logger.warning(f"Using port {free_port} instead.")
+
+    if port is not None:
+        logger.warning(f"Using port {free_port} instead.")
+    else:
+        logger.info(f"Found available port {free_port}.")
     return free_port

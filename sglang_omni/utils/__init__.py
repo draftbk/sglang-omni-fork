@@ -15,6 +15,7 @@ from .misc import (
 )
 
 __all__ = [
+    "find_available_port",
     "load_hf_config",
     "instantiate_module",
     "architecture_from_hf_config",
@@ -25,5 +26,4 @@ __all__ = [
     "add_prefix",
     "set_random_seed",
     "broadcast_pyobj",
-    "find_available_port",
 ]
