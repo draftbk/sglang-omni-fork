@@ -543,6 +543,38 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span>
 </pre></div>
 </div>
+<p>By default, leave <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> unset and let SGLang-Omni auto-size the
+SGLang AR memory budget. If a specific machine needs manual tuning, you can pin
+the value globally or per AR stage:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.88
+</pre></div>
+</div>
+<p>Use per-stage flags when the thinker and talker need different budgets:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker-mem-fraction-static<span class="w"> </span><span class="m">0</span>.88<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--talker-mem-fraction-static<span class="w"> </span><span class="m">0</span>.88
+</pre></div>
+</div>
+<p>The speech server launcher exposes the same per-stage controls:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>examples/run_qwen3_omni_speech_server.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gpu-thinker<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gpu-talker<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gpu-code-predictor<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--gpu-code2wav<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker-mem-fraction-static<span class="w"> </span><span class="m">0</span>.88<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--talker-mem-fraction-static<span class="w"> </span><span class="m">0</span>.88
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span></code> applies to both Qwen AR stages. Per-stage flags override
+the global value for that stage. Values must be greater than <code class="docutils literal notranslate"><span class="pre">0</span></code> and less than
+<code class="docutils literal notranslate"><span class="pre">1</span></code>.</p>
 </section>
 <section id="id2">
 <h3>Image and Text Input<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
