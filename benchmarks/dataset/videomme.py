@@ -6,8 +6,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from datasets import Video, concatenate_datasets, load_dataset
+from datasets import load_dataset
+from huggingface_hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +52,31 @@ def format_videomme_prompt(question: str, options: list[str]) -> str:
     return prompt
 
 
-def _extract_video_path(row: dict) -> str | None:
-    video = row.get("video")
-    if isinstance(video, dict):
-        path = video.get("path")
-        if path:
-            return str(path)
-    if isinstance(video, str) and video:
-        return video
-    return None
+def _resolve_video_path(snapshot_dir: Path, row: dict, question_id: str) -> str | None:
+    relative_path = row.get("video_path")
+    if not relative_path:
+        logger.warning(
+            "Skipping Video-MME sample %s because the dataset row has no video_path",
+            question_id,
+        )
+        return None
+    absolute_path = (snapshot_dir / str(relative_path)).resolve()
+    if not absolute_path.exists():
+        logger.warning(
+            "Skipping Video-MME sample %s because the video file does not exist at %s",
+            question_id,
+            absolute_path,
+        )
+        return None
+    return str(absolute_path)
 
 
-def _dataset_to_samples(dataset, *, max_samples: int | None) -> list[VideoMMESample]:
+def _dataset_to_samples(
+    dataset,
+    *,
+    snapshot_dir: Path,
+    max_samples: int | None,
+) -> list[VideoMMESample]:
     samples: list[VideoMMESample] = []
     for row_index, row in enumerate(dataset):
         duration = str(row.get("duration", "short")).strip()
@@ -72,12 +87,8 @@ def _dataset_to_samples(dataset, *, max_samples: int | None) -> list[VideoMMESam
         index2ans = {choice: option for choice, option in zip(all_choices, options)}
         video_id = str(row["video_id"]).strip()
         url = str(row["url"]).strip()
-        video_path = _extract_video_path(row)
+        video_path = _resolve_video_path(snapshot_dir, row, question_id)
         if not video_path:
-            logger.warning(
-                "Skipping Video-MME sample %s because the dataset row has no usable video path",
-                question_id,
-            )
             continue
 
         samples.append(
@@ -105,6 +116,26 @@ def _dataset_to_samples(dataset, *, max_samples: int | None) -> list[VideoMMESam
     return samples
 
 
+def _load_metadata_dataset(snapshot_dir: Path, split: str):
+    data_dir = snapshot_dir / "data"
+    split_parts = sorted(data_dir.glob(f"{split}_part_*.jsonl"))
+    if split_parts:
+        return load_dataset(
+            "json",
+            data_files=[str(path) for path in split_parts],
+            split="train",
+        )
+
+    split_file = data_dir / f"{split}.jsonl"
+    if split_file.exists():
+        return load_dataset("json", data_files=str(split_file), split="train")
+
+    available = sorted(path.name for path in data_dir.glob("*.jsonl"))
+    raise ValueError(
+        f"Split '{split}' not found under {data_dir}. Available files: {available}"
+    )
+
+
 def load_videomme_samples(
     max_samples: int | None = None,
     *,
@@ -112,24 +143,14 @@ def load_videomme_samples(
     split: str = "test",
 ) -> list[VideoMMESample]:
     resolved_repo_id = repo_id or "zhaochenyang20/Video_MME"
-    all_splits = load_dataset(resolved_repo_id)
-    split_parts = sorted(
-        split_name
-        for split_name in all_splits.keys()
-        if split_name.startswith(f"{split}_part_")
+    snapshot_dir = Path(
+        snapshot_download(repo_id=resolved_repo_id, repo_type="dataset")
     )
-    if split_parts:
-        ds = concatenate_datasets(
-            [all_splits[split_name] for split_name in split_parts]
-        )
-    elif split in all_splits:
-        ds = all_splits[split]
-    else:
-        raise ValueError(
-            f"Split '{split}' not found in {resolved_repo_id}, and no chunked splits matching "
-            f"'{split}_part_*' were found. Available splits: {list(all_splits.keys())}"
-        )
-    ds = ds.cast_column("video", Video(decode=False))
-    samples = _dataset_to_samples(ds, max_samples=max_samples)
+    dataset = _load_metadata_dataset(snapshot_dir, split)
+    samples = _dataset_to_samples(
+        dataset,
+        snapshot_dir=snapshot_dir,
+        max_samples=max_samples,
+    )
     logger.info("Loaded %d Video-MME samples", len(samples))
     return samples
