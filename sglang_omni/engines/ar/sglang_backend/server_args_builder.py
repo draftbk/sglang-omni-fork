@@ -15,16 +15,14 @@ def build_sglang_server_args(
     max_prefill_tokens: int = 4096,
     max_running_requests: int = 16,
     mem_fraction_static: float | None = None,
-    auto_mem_fraction_static_reserve: float | None = None,
     **overrides: Any,
 ) -> ServerArgs:
-    """Build ServerArgs with shared defaults for all SGLang AR engines.
+    """Build a SGLang ``ServerArgs`` with shared defaults for AR engines.
 
-    Note (Chenyang):
-    When mem_fraction_static is None and auto_mem_fraction_static_reserve
-    is positive, the reserve is subtracted from SGLang's auto-selected
-     mem_fraction_static. If that would leave less than 0.01, we raise
-    instead of silently underfunding SGLang's KV pool.
+    Only fields that SGLang's own ``ServerArgs`` accepts are passed through
+    here. Domain-specific adjustments (e.g. carving out GPU memory for a
+    co-located vision/audio encoder) are the caller's responsibility —
+    see ``apply_encoder_mem_reserve``.
     """
     kwargs: dict[str, Any] = {
         "model_path": model_path,
@@ -41,44 +39,35 @@ def build_sglang_server_args(
     if mem_fraction_static is not None:
         kwargs["mem_fraction_static"] = mem_fraction_static
     kwargs.update(overrides)
-    server_args = ServerArgs(**kwargs)
-    _apply_auto_mem_fraction_static_reserve(
-        server_args,
-        enabled=auto_mem_fraction_static_reserve is not None,
-        user_mem_fraction_static=mem_fraction_static,
-        reserve=auto_mem_fraction_static_reserve or 0.0,
-    )
-    return server_args
+    return ServerArgs(**kwargs)
 
 
-def _apply_auto_mem_fraction_static_reserve(
+def apply_encoder_mem_reserve(
     server_args: ServerArgs,
-    *,
-    enabled: bool,
-    user_mem_fraction_static: float | None,
-    reserve: float,
+    encoder_mem_reserve: float,
 ) -> None:
-    """Subtract a caller-requested reserve from SGLang's auto-selected value.
+    """Subtract ``encoder_mem_reserve`` from SGLang's auto-picked mem_fraction_static.
 
-    # Note (Chenyang):
-    Raises ValueError when the remaining mem_fraction_static would
-    drop below 0.1 — below that, SGLang's KV allocator fails deep in the
-    scheduler with a confusing stack trace (empirically crashes ~0.08 on
-    H200 for Qwen3-Omni-30B), so surface the failure at build time.
+    Call this only when SGLang auto-selected ``mem_fraction_static`` —
+    i.e. the caller did NOT pin ``--mem-fraction-static``. When the caller
+    pinned, that value is the whole budget and the reserve is meaningless.
+
+    Raises ``ValueError`` when the result would drop below 0.1 — below
+    that, SGLang's KV allocator fails deep in the scheduler with a
+    confusing traceback (empirically crashes ~0.08 on H200 for
+    Qwen3-Omni-30B), so surface it at build time instead.
     """
-    if not enabled or user_mem_fraction_static is not None:
+    if encoder_mem_reserve <= 0:
         return
-    if reserve <= 0:
-        return
-
     current = server_args.mem_fraction_static
     if current is None:
         return
-    new_value = current - reserve
+    new_value = current - encoder_mem_reserve
     if new_value < 0.1:
         raise ValueError(
             f"auto mem_fraction_static {current:.3f} minus encoder_mem_reserve "
-            f"{reserve:.3f} = {new_value:.3f} is below the safe floor 0.1; "
-            f"lower encoder_mem_reserve or pin --mem-fraction-static explicitly."
+            f"{encoder_mem_reserve:.3f} = {new_value:.3f} is below the safe "
+            f"floor 0.1; lower encoder_mem_reserve or pin "
+            f"--mem-fraction-static explicitly."
         )
     server_args.mem_fraction_static = round(new_value, 3)

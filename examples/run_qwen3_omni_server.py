@@ -109,8 +109,7 @@ def _check_mem_flag_mutex(
     mem_fraction_static: float | None,
     encoder_mem_reserve: float | None,
 ) -> None:
-    """Reject passing both --mem-fraction-static and --encoder-mem-reserve.
-    """
+    """Reject passing both --mem-fraction-static and --encoder-mem-reserve."""
     if mem_fraction_static is not None and encoder_mem_reserve is not None:
         raise ValueError(
             "--mem-fraction-static and --encoder-mem-reserve are mutually "

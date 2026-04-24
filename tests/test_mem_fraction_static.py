@@ -17,6 +17,7 @@ import typer
 from sglang_omni.cli.serve import serve
 from sglang_omni.config.schema import ExecutorConfig, PipelineConfig, StageConfig
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
+    apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
@@ -105,52 +106,28 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown stage 'nope'"):
             config.apply_server_args_overrides(stage_name="nope", overrides={})
 
-    @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
-    def test_auto_mem_fraction_static_reserve_subtracts_auto_value_only(
-        self, server_args_mock
-    ) -> None:
-        """Encoder reserve subtracts from SGLang's auto value and leaves ServerArgs' mem_fraction_static kwarg unset."""
-        server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.929)
+    def test_apply_encoder_mem_reserve_subtracts(self) -> None:
+        """Helper subtracts the reserve from the server_args' auto mem_fraction_static in-place."""
+        server_args = SimpleNamespace(mem_fraction_static=0.929)
 
-        server_args = build_sglang_server_args(
-            model_path="dummy",
-            context_length=8192,
-            auto_mem_fraction_static_reserve=0.05,
-        )
+        apply_encoder_mem_reserve(server_args, 0.05)
 
         self.assertEqual(server_args.mem_fraction_static, 0.879)
-        self.assertNotIn("mem_fraction_static", server_args_mock.call_args.kwargs)
 
-    @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
-    def test_auto_mem_fraction_static_reserve_preserves_user_pinned_value(
-        self, server_args_mock
-    ) -> None:
-        """User-pinned mem_fraction_static bypasses the encoder reserve."""
-        server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.88)
+    def test_apply_encoder_mem_reserve_noop_when_zero(self) -> None:
+        """Reserve = 0 is a no-op; non-thinker callers (talker_ar) rely on this."""
+        server_args = SimpleNamespace(mem_fraction_static=0.929)
 
-        server_args = build_sglang_server_args(
-            model_path="dummy",
-            context_length=8192,
-            mem_fraction_static=0.88,
-            auto_mem_fraction_static_reserve=0.05,
-        )
-
-        self.assertEqual(server_args.mem_fraction_static, 0.88)
-        self.assertEqual(server_args_mock.call_args.kwargs["mem_fraction_static"], 0.88)
-
-    @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
-    def test_auto_reserve_not_applied_when_reserve_kwarg_omitted(
-        self, server_args_mock
-    ) -> None:
-        """Callers that omit auto_mem_fraction_static_reserve (e.g. talker_ar) pass the raw auto value through unchanged."""
-        server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.929)
-
-        server_args = build_sglang_server_args(
-            model_path="dummy",
-            context_length=8192,
-        )
+        apply_encoder_mem_reserve(server_args, 0.0)
 
         self.assertEqual(server_args.mem_fraction_static, 0.929)
+
+    def test_build_sglang_server_args_no_longer_takes_reserve_kwarg(self) -> None:
+        """``build_sglang_server_args`` is now pure ServerArgs construction; reserve lives in ``apply_encoder_mem_reserve``."""
+        import inspect
+
+        sig = inspect.signature(build_sglang_server_args)
+        self.assertNotIn("auto_mem_fraction_static_reserve", sig.parameters)
 
 
 @unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable")
@@ -179,7 +156,7 @@ class TestEncoderMemReserveRouting(unittest.TestCase):
     def test_encoder_mem_reserve_reaches_thinker_factory(
         self, create_thinker_executor_mock
     ) -> None:
-        """The routed ``encoder_mem_reserve`` lands on ``build_sglang_server_args(auto_mem_fraction_static_reserve=...)`` unchanged."""
+        """The routed ``encoder_mem_reserve`` reaches the factory and is applied to ``server_args.mem_fraction_static``."""
         config = Qwen3OmniPipelineConfig(model_path="dummy")
         config.apply_server_args_overrides(
             stage_name="thinker",
@@ -266,22 +243,16 @@ class TestEncoderMemReserveRouting(unittest.TestCase):
         self.assertEqual(thinker_stage.executor.args["encoder_mem_reserve"], 0.20)
 
 
-class TestEncoderMemReserveBuilderFloor(unittest.TestCase):
-    """Builder raises when reserve would drop auto mem_fraction_static below safe floor."""
+class TestEncoderMemReserveFloor(unittest.TestCase):
+    """``apply_encoder_mem_reserve`` raises when reserve would drop mem_fraction_static below the safe floor."""
 
-    def test_reserve_dropping_auto_below_floor_raises(self) -> None:
-        with patch(
-            "sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs"
-        ) as server_args_mock:
-            # Simulate a tiny auto value (small-memory GPU) + an aggressive
-            # reserve. 0.15 - 0.10 = 0.05 < floor 0.1 -> raise.
-            server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.15)
-            with self.assertRaisesRegex(ValueError, r"below the safe floor"):
-                build_sglang_server_args(
-                    model_path="dummy",
-                    context_length=8192,
-                    auto_mem_fraction_static_reserve=0.10,
-                )
+    def test_reserve_dropping_below_floor_raises(self) -> None:
+        # Simulate a tiny auto value (small-memory GPU) + an aggressive
+        # reserve. 0.15 - 0.10 = 0.05 < floor 0.1 -> raise.
+        server_args = SimpleNamespace(mem_fraction_static=0.15)
+
+        with self.assertRaisesRegex(ValueError, r"below the safe floor"):
+            apply_encoder_mem_reserve(server_args, 0.10)
 
 
 class TestCliMemFlagMutex(unittest.TestCase):

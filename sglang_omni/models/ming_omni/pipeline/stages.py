@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
+    apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
 from sglang_omni.engines.omni import create_sglang_ar_engine, create_single_pass_engine
@@ -337,9 +338,13 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         local_path,
         context_length=thinker_max_seq_len,
-        auto_mem_fraction_static_reserve=0.05,
         **overrides,
     )
+    # Ming-Omni co-locates vision/audio encoders on the thinker GPU; reserve
+    # 0.05 of GPU memory outside SGLang's static pool for them. Skipped when
+    # the caller pinned mem_fraction_static (no auto value to subtract from).
+    if "mem_fraction_static" not in overrides:
+        apply_encoder_mem_reserve(server_args, 0.05)
     pre_load_mem = (
         f", pre_load_avail_mem={pre_load_avail_mem:.2f} GB"
         if pre_load_avail_mem is not None

@@ -10,6 +10,7 @@ import torch
 from transformers import AutoTokenizer
 
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
+    apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
 from sglang_omni.engines.omni import (
@@ -368,12 +369,16 @@ def create_sglang_thinker_executor_from_config(
     for high-concurrency long-video or long-audio workloads.
     """
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
+    overrides = server_args_overrides or {}
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
-        auto_mem_fraction_static_reserve=encoder_mem_reserve,
-        **(server_args_overrides or {}),
+        **overrides,
     )
+    # Pinning mem_fraction_static bypasses SGLang's auto path, so the
+    # encoder reserve (which subtracts from that auto value) is skipped.
+    if "mem_fraction_static" not in overrides:
+        apply_encoder_mem_reserve(server_args, encoder_mem_reserve)
     pre_load_mem = (
         f" pre_load_avail_mem={pre_load_avail_mem:.2f} GB"
         if pre_load_avail_mem is not None
