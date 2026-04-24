@@ -51,13 +51,6 @@ def build_sglang_server_args(
     return server_args
 
 
-# Minimum ``mem_fraction_static`` SGLang can still boot with on a typical
-# Qwen3-Omni-30B thinker: below this the KV allocator fails deep in the
-# scheduler with a confusing stack trace, so raise early at build time
-# instead. 0.05 was too permissive (SGLang crashes ~0.08 on H200 for 30B).
-_MIN_MEM_FRACTION_STATIC_AFTER_RESERVE = 0.1
-
-
 def _apply_auto_mem_fraction_static_reserve(
     server_args: ServerArgs,
     *,
@@ -67,9 +60,10 @@ def _apply_auto_mem_fraction_static_reserve(
 ) -> None:
     """Subtract a caller-requested reserve from SGLang's auto-selected value.
 
-    Raises ``ValueError`` when the resulting ``mem_fraction_static`` would
-    fall below ``_MIN_MEM_FRACTION_STATIC_AFTER_RESERVE`` — otherwise SGLang
-    fails deep inside KV allocation with a confusing traceback.
+    Raises ``ValueError`` when the remaining ``mem_fraction_static`` would
+    drop below 0.1 — below that, SGLang's KV allocator fails deep in the
+    scheduler with a confusing stack trace (empirically crashes ~0.08 on
+    H200 for Qwen3-Omni-30B), so surface the failure at build time.
     """
     if not enabled or user_mem_fraction_static is not None:
         return
@@ -80,11 +74,10 @@ def _apply_auto_mem_fraction_static_reserve(
     if current is None:
         return
     new_value = current - reserve
-    if new_value < _MIN_MEM_FRACTION_STATIC_AFTER_RESERVE:
+    if new_value < 0.1:
         raise ValueError(
             f"auto mem_fraction_static {current:.3f} minus encoder_mem_reserve "
-            f"{reserve:.3f} = {new_value:.3f} is below the safe floor "
-            f"{_MIN_MEM_FRACTION_STATIC_AFTER_RESERVE}; lower encoder_mem_reserve "
-            f"or pin --mem-fraction-static explicitly."
+            f"{reserve:.3f} = {new_value:.3f} is below the safe floor 0.1; "
+            f"lower encoder_mem_reserve or pin --mem-fraction-static explicitly."
         )
     server_args.mem_fraction_static = round(new_value, 3)
