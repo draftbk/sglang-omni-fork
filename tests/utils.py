@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import signal
-import statistics
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -252,78 +251,6 @@ def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -
             f"rtf_mean {summary['rtf_mean']} > "
             f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
         )
-
-
-def assert_streaming_consistency(
-    non_stream_requests: list[dict],
-    stream_requests: list[dict],
-    *,
-    expected_stream_count: int | None = None,
-    total_completion_token_rtol: float = 0.12,
-    median_completion_token_rtol: float = 0.20,
-    total_audio_duration_rtol: float = 0.12,
-) -> None:
-    """Assert stable invariants on the shared request subset."""
-    ns_by_id = {r["id"]: r for r in non_stream_requests}
-    st_by_id = {r["id"]: r for r in stream_requests}
-    common_ids = sorted(set(ns_by_id) & set(st_by_id))
-    assert common_ids, "No overlapping request IDs between non-stream and stream runs"
-    assert set(st_by_id).issubset(set(ns_by_id)), (
-        "Streaming requests must be a subset of non-streaming requests: "
-        f"non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
-    )
-    if expected_stream_count is not None:
-        assert len(st_by_id) == expected_stream_count, (
-            f"Expected {expected_stream_count} streaming requests, "
-            f"got {len(st_by_id)}"
-        )
-
-    ns_completion_tokens: list[int] = []
-    st_completion_tokens: list[int] = []
-    ns_audio_duration_total = 0.0
-    st_audio_duration_total = 0.0
-
-    for rid in common_ids:
-        ns, st = ns_by_id[rid], st_by_id[rid]
-        assert ns["prompt_tokens"] == st["prompt_tokens"], (
-            f"Request {rid}: prompt_tokens mismatch — "
-            f"non_stream={ns['prompt_tokens']}, stream={st['prompt_tokens']}"
-        )
-        ns_completion_tokens.append(ns["completion_tokens"])
-        st_completion_tokens.append(st["completion_tokens"])
-        ns_audio_duration_total += ns["audio_duration_s"]
-        st_audio_duration_total += st["audio_duration_s"]
-
-    ns_completion_total = sum(ns_completion_tokens)
-    st_completion_total = sum(st_completion_tokens)
-    max_completion_total = max(ns_completion_total, st_completion_total)
-    assert abs(ns_completion_total - st_completion_total) <= (
-        total_completion_token_rtol * max_completion_total
-    ), (
-        "Total completion_tokens differ too much — "
-        f"non_stream={ns_completion_total}, stream={st_completion_total} "
-        f"(rtol={total_completion_token_rtol})"
-    )
-
-    ns_completion_median = statistics.median(ns_completion_tokens)
-    st_completion_median = statistics.median(st_completion_tokens)
-    max_completion_median = max(ns_completion_median, st_completion_median)
-    assert abs(ns_completion_median - st_completion_median) <= (
-        median_completion_token_rtol * max_completion_median
-    ), (
-        "Median completion_tokens differ too much — "
-        f"non_stream={ns_completion_median}, stream={st_completion_median} "
-        f"(rtol={median_completion_token_rtol})"
-    )
-
-    max_audio_duration_total = max(ns_audio_duration_total, st_audio_duration_total)
-    assert abs(ns_audio_duration_total - st_audio_duration_total) <= (
-        total_audio_duration_rtol * max_audio_duration_total
-    ), (
-        "Total audio_duration_s differs too much — "
-        f"non_stream={ns_audio_duration_total}, stream={st_audio_duration_total} "
-        f"(rtol={total_audio_duration_rtol})"
-    )
 
 
 def assert_wer_partitioned(
