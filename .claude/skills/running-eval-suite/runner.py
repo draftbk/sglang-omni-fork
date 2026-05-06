@@ -260,11 +260,19 @@ def _benchmark_name(row: dict) -> str:
     return stem
 
 
-def _select_rows(rows: list[dict], spec: str | None) -> list[dict]:
+def _select_rows(rows: list[dict], spec: str | None,
+                 exclude_ids: str | None = None) -> list[dict]:
     if not spec or spec == "all":
-        return list(rows)
-    wanted = {s.strip() for s in spec.split(",") if s.strip()}
-    return [r for r in rows if _benchmark_name(r) in wanted]
+        kept = list(rows)
+    else:
+        wanted = {s.strip() for s in spec.split(",") if s.strip()}
+        kept = [r for r in rows if _benchmark_name(r) in wanted]
+    if exclude_ids:
+        tokens = [s.strip() for s in exclude_ids.split(",") if s.strip()]
+        if tokens:
+            kept = [r for r in kept
+                    if not any(t in str(r.get("id", "")) for t in tokens)]
+    return kept
 
 
 # ---------- precheck ----------
@@ -477,7 +485,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"run dir: {out}")
 
     rows = cfg.get("rows", [])
-    selected = _select_rows(rows, args.benchmarks)
+    selected = _select_rows(rows, args.benchmarks, args.exclude_ids)
     if not selected:
         raise SystemExit(
             "no rows selected — pass --benchmarks NAME,NAME or --benchmarks all. "
@@ -1014,6 +1022,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="comma-separated benchmark short names "
                         "(e.g. mmsu,mmmu,seedtts), or 'all' for every "
                         "row in the model's config.yaml")
+    p.add_argument("--exclude-ids", default=None,
+                   help="comma-separated row-id substrings to skip "
+                        "(e.g. 's2pro-' to drop S2-Pro rows when --benchmarks "
+                        "would otherwise pick them up via shared short names)")
     p.add_argument("--rounds", type=int, default=1,
                    help="rounds per row (default 1)")
     p.add_argument("--smoke", type=int, default=None,
