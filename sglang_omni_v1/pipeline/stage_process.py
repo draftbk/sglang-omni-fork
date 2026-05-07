@@ -33,7 +33,7 @@ class StageProcessSpec:
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
-    gpu_id: int = 0
+    gpu_id: int | None = None
     nccl_port: int | None = None
 
     # Factory
@@ -225,6 +225,10 @@ def get_stage_process_env(
     """Return per-process env overrides needed before TP child startup."""
     if spec.tp_size <= 1:
         return {}
+    if spec.gpu_id is None:
+        raise ValueError(
+            f"tp stage {spec.stage_name!r} requires an explicit gpu_id per rank"
+        )
 
     source_env = env if env is not None else os.environ
     original_visible = source_env.get("CUDA_VISIBLE_DEVICES")

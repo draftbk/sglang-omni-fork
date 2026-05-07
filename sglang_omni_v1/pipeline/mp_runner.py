@@ -125,11 +125,13 @@ def _build_stage_groups(
     return groups
 
 
-def _resolve_gpu_ids(stage_cfg: StageConfig, config: PipelineConfig) -> list[int]:
+def _resolve_gpu_ids(
+    stage_cfg: StageConfig, config: PipelineConfig
+) -> list[int | None]:
     """Return the list of GPU ids for *stage_cfg* (one per TP rank)."""
     placement = config.gpu_placement.get(stage_cfg.name)
     if placement is None:
-        return [0] * stage_cfg.tp_size
+        return [None] * stage_cfg.tp_size
     if isinstance(placement, int):
         return [placement] * stage_cfg.tp_size
     # list[int] — one gpu per tp rank
@@ -145,13 +147,13 @@ def _build_single_stage_spec(
     *,
     stage_cfg: StageConfig,
     config: PipelineConfig,
-    gpu_id: int,
+    gpu_id: int | None,
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
 ) -> StageProcessSpec:
     factory_args = dict(base_factory_args)
-    if "gpu_id" in base_factory_args:
+    if "gpu_id" in base_factory_args and gpu_id is not None:
         factory_args["gpu_id"] = gpu_id
     relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
     return StageProcessSpec(
@@ -172,7 +174,7 @@ def _build_tp_stage_specs(
     ctx: multiprocessing.context.BaseContext,
     stage_cfg: StageConfig,
     config: PipelineConfig,
-    gpu_ids: list[int],
+    gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
@@ -185,7 +187,7 @@ def _build_tp_stage_specs(
     for tp_rank in range(stage_cfg.tp_size):
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         factory_args = dict(base_factory_args)
-        if "gpu_id" in base_factory_args:
+        if "gpu_id" in base_factory_args and gpu_id is not None:
             factory_args["gpu_id"] = gpu_id
         factory_args["tp_rank"] = tp_rank
         factory_args["tp_size"] = stage_cfg.tp_size
@@ -235,7 +237,7 @@ def _resolve_relay_config(
     stage_cfg: StageConfig,
     config: PipelineConfig,
     *,
-    gpu_id: int,
+    gpu_id: int | None,
 ) -> dict[str, Any]:
     """Build relay config, overriding gpu_id from placement."""
     relay_config = _build_relay_config(stage_cfg, config)

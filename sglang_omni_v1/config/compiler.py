@@ -32,7 +32,7 @@ def _resolve_factory_args(
         args["model_path"] = global_cfg.model_path
 
     if "gpu_id" in sig.parameters and "gpu_id" not in args:
-        placement = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        placement = global_cfg.gpu_placement.get(stage_cfg.name)
         gpu_id = placement[0] if isinstance(placement, list) else placement
         args["gpu_id"] = gpu_id
 
