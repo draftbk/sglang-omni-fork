@@ -517,14 +517,13 @@ rows:
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --enable-audio --max-concurrency 8 --max-tokens 256 --output-dir {output_dir}"
     result_json: "videoamme_results.json"
     cells:
-      evaluated:             { paths: { v: "wer.summary.evaluated", t: "wer.summary.total" }, format: "{v}/{t}" }
+      evaluated:             { paths: { v: "wer.summary.evaluated", t: "wer.summary.total_samples" }, format: "{v}/{t}" }
       skipped:               { path: "wer.summary.skipped", format: "{v}" }
       wer_corpus:            { path: "wer.summary.wer_corpus",            format: "{v:.2%}" }
       wer_per_sample_mean:   { path: "wer.summary.wer_per_sample_mean",   format: "{v:.2%}" }
       wer_per_sample_p95:    { path: "wer.summary.wer_per_sample_p95",    format: "{v:.2%}" }
       wer_per_sample_max:    { path: "wer.summary.wer_per_sample_max",    format: "{v:.2%}" }
       n_above_50_pct_wer:    { path: "wer.summary.n_above_50_pct_wer",    format: "{v}" }
-      rtf_mean:              { path: "wer.summary.rtf_mean",              format: "{v:.4f}" }
       audio_duration_mean_s: { path: "wer.summary.audio_duration_mean_s", format: "{v:.3f}" }
 
   # ===================== s2-pro tts (separate model, fishaudio/s2-pro) =====================
