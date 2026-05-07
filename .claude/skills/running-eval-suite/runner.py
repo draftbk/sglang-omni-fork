@@ -246,6 +246,34 @@ def free_gpu_indices(gpus: list[dict], free_thresh_mb: int = 1000) -> list[int]:
     return out
 
 
+def _wait_for_memory_release(gpu_indices: list[int], *,
+                             low_watermark_mb: int, max_wait_s: int) -> None:
+    """Poll until each assigned GPU's used memory drops below watermark.
+
+    Talker mp_runner can leave ~60-100 GB of CUDA context allocated for
+    seconds after process exit. Without this wait the next round boots
+    a server while the prior context still holds memory and OOMs.
+    """
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        gpus, err = parse_gpu_status()
+        if err:
+            time.sleep(2)
+            continue
+        by_idx = {g["index"]: g for g in gpus}
+        all_clear = True
+        for idx in gpu_indices:
+            g = by_idx.get(idx)
+            if g is None:
+                continue
+            if g["mem_used_mb"] >= low_watermark_mb:
+                all_clear = False
+                break
+        if all_clear:
+            return
+        time.sleep(3)
+
+
 def _gpus_with_active_processes() -> set[str]:
     try:
         out = subprocess.check_output(
@@ -634,6 +662,14 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         rounds_state.append(rstate)
         if rstate["status"] != "ok":
             break
+        # Talker pipelines (server_gpus=2) have shown round-to-round
+        # GPU memory leak: stage processes are torn down but driver
+        # contexts can hold ~60 GB until refcounts hit zero. Wait
+        # actively for the assigned GPUs to drop below half-utilized
+        # before the next round, up to ~60 s.
+        if k < rounds and gpu_count >= 2:
+            _wait_for_memory_release(chosen, low_watermark_mb=70_000,
+                                     max_wait_s=60)
     overall = "ok" if rounds_state and all(
         r["status"] == "ok" for r in rounds_state
     ) else "fail"
