@@ -573,23 +573,29 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
     print(f"\n[row] {row_id}")
 
     gpu_count = int(row.get("server_gpus", 1))
-    gpus, err = parse_gpu_status()
-    if err:
-        return {"id": row_id, "status": "fail", "reason": err, "rounds": []}
-    free = free_gpu_indices(gpus)
-    if gpu_pool is not None:
-        pool_set = set(gpu_pool)
-        free = [g for g in free if g in pool_set]
-    if len(free) < gpu_count:
+    pool_set = set(gpu_pool) if gpu_pool is not None else None
+    last_err = ""
+    free: list[int] = []
+    # Retry GPU availability check — when a previous row crashes fast,
+    # CUDA memory release lags behind process exit by a few seconds.
+    for attempt in range(10):
+        gpus, last_err = parse_gpu_status()
+        if last_err:
+            time.sleep(3)
+            continue
+        free = free_gpu_indices(gpus)
+        if pool_set is not None:
+            free = [g for g in free if g in pool_set]
+        if len(free) >= gpu_count:
+            break
+        time.sleep(3)
+    else:
         pool_note = f" (pool={gpu_pool})" if gpu_pool is not None else ""
-        return {
-            "id": row_id, "status": "fail",
-            "reason": (
-                f"not enough free GPUs (need {gpu_count}, have {len(free)})"
-                f"{pool_note}"
-            ),
-            "rounds": [],
-        }
+        reason = last_err or (
+            f"not enough free GPUs (need {gpu_count}, have {len(free)})"
+            f"{pool_note}"
+        )
+        return {"id": row_id, "status": "fail", "reason": reason, "rounds": []}
     chosen = free[:gpu_count]
     gpus_csv = ",".join(str(g) for g in chosen)
     print(f"  gpus: {gpus_csv}")
