@@ -58,10 +58,10 @@ Accuracy (accuracy.wer)
 
 | Model      | Config            | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
 | ---------- | ----------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
-| Qwen3-Omni | EN, voice_clone=T | 2.18%      | 2.28%               | 0.00%                 | 7.8%               | 1088/1088 | 0       | PR #393 [H200, V1-pipeline, full-set, c=16, n=3 mean] |
-| Qwen3-Omni | EN, voice_clone=F | 2.06%      | 2.19%               | 0.00%                 | 6.8%               | 1088/1088 | 0       | PR #393 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=T | 1.88%      | 1.80%               | 0.00%                 | 12.0%              | 2020/2020 | 0       | PR #393 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=F | 1.80%      | 1.70%               | 0.00%                 | 8.0%               | 2020/2020 | 0       | PR #393 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 3.79%      | 7.33%               | 0.00%                 | 176.6%             | 1088/1088 | 0       | local 54455b3 [H200, V1-pipeline, full-set, c=16, n=3 mean] |
+| Qwen3-Omni | EN, voice_clone=F | 4.34%      | 4.18%               | 0.00%                 | 40.7%              | 1088/1088 | 0       | local 54455b3 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 1.67%      | 1.65%               | 0.00%                 | 8.4%               | 2020/2020 | 0       | dirty 54455b3 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=F | 2.21%      | 2.00%               | 0.00%                 | 14.6%              | 2020/2020 | 0       | dirty 54455b3 [H200, V1-pipeline, full-set, c=16] |
 | Qwen3-Omni | EN, voice_clone=T | 1.86%      | 1.94%               | 0.00%                 | 5.9%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | EN, voice_clone=F | 2.40%      | 2.44%               | 0.00%                 | 7.3%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=T | 1.49%      | 1.45%               | 0.00%                 | 3.7%               | 2020/2020 | 0       | PR #351 [H100, full-set, c=16] |
@@ -74,10 +74,10 @@ Generation speed (generation.speed)
 
 | Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                         |
 | ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ------------------------------ |
-| Qwen3-Omni | EN, voice_clone=T | 6.84           | 11.22         | 1.91     | 2.327          | 2.2            | 2.1           | PR #393 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=F | 5.60           | 8.25          | 1.56     | 2.847          | 2.6            | 2.5           | PR #393 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=T | 6.94           | 9.36          | 1.67     | 2.301          | 2.5            | 2.4           | PR #393 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=F | 6.51           | 8.77          | 1.57     | 2.450          | 2.6            | 2.6           | PR #393 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 3.00           | 4.36          | 0.85     | 5.318          | 4.9            | 4.8           | local 54455b3 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=F | 2.95           | 4.10          | 0.75     | 5.384          | 5.3            | 4.8           | local 54455b3 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 3.23           | 4.34          | 0.78     | 4.941          | 5.3            | 5.2           | local 54455b3 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=F | 2.97           | 3.84          | 0.69     | 5.369          | 5.9            | 5.7           | dirty 1665ec6 [H200, V1-pipeline, full-set, c=16] |
 | Qwen3-Omni | EN, voice_clone=T | 44.94          | 67.44         | 12.43    | 0.355          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | EN, voice_clone=F | 45.73          | 68.10         | 12.69    | 0.349          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=T | 55.88          | 74.93         | 13.44    | 0.286          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
