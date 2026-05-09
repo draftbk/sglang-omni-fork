@@ -283,6 +283,14 @@ def _patch_encoder_scheduler_engine(monkeypatch) -> dict[str, object]:
 def test_qwen3_audio_executor_forwards_cache_settings(monkeypatch) -> None:
     """The audio factory plumbs the QWEN3 cache budget into OmniEngine."""
     stages = _import_qwen3_stages_for_test(monkeypatch)
+
+    class FakeAudioEncoder:
+        def __init__(self, *, model_path: str, device: str, dtype: str | None):
+            self.model_path = model_path
+            self.device = device
+            self.dtype = dtype
+
+    _patch_module(monkeypatch, stages, Qwen3OmniAudioEncoder=FakeAudioEncoder)
     captured = _patch_encoder_scheduler_engine(monkeypatch)
     sentinel_engine = captured["_sentinel"]
 
