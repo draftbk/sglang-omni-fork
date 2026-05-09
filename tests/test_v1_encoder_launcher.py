@@ -37,20 +37,10 @@ from sglang_omni_v1.scheduling.sglang_backend.encoder_server_args import (
 # resolution works.
 # ---------------------------------------------------------------------------
 
-_REGISTERED: dict[str, object] = {}
-
-
-def _register(name: str, fn):
-    _REGISTERED[name] = fn
-    return fn
-
-
-@_register("test_factory_no_tp_params")
 def _factory_no_tp_params(model_path: str, *, gpu_id: int = 0, **kwargs):
     return ("no-tp", model_path, gpu_id, kwargs)
 
 
-@_register("test_factory_tp_aware")
 def _factory_tp_aware(
     model_path: str,
     *,
@@ -63,8 +53,7 @@ def _factory_tp_aware(
     return ("tp-aware", tp_rank, tp_size, nccl_port, kwargs)
 
 
-@_register("test_factory_encoder_local_default")
-def _factory_encoder(
+def _factory_encoder_local_default(
     model_path: str,
     *,
     gpu_id: int = 0,
