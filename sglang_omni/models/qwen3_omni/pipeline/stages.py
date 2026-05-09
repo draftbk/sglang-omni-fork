@@ -4,17 +4,21 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from transformers import AutoTokenizer
 
-from sglang_omni.encoders import build_encoder_executor
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
-from sglang_omni.engines.omni import create_ar_engine, create_sglang_ar_engine
+from sglang_omni.engines.omni import (
+    create_ar_engine,
+    create_sglang_ar_engine,
+    create_single_pass_engine,
+)
+from sglang_omni.engines.omni.types import SchedulerRequest
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -23,14 +27,12 @@ from sglang_omni.models.qwen3_omni.components.talker_executor import (
     TalkerStreamingExecutor,
 )
 from sglang_omni.models.qwen3_omni.components.thinker import Qwen3OmniSplitThinker
-from sglang_omni.models.qwen3_omni.encoder_adapter import (
-    QWEN3_OMNI_AUDIO_ENCODER,
-    QWEN3_OMNI_IMAGE_ENCODER,
-)
 from sglang_omni.models.qwen3_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
     DEFAULT_THINKER_MAX_SEQ_LEN,
+    apply_encoder_result,
     apply_thinker_result,
+    build_encoder_request,
     build_sglang_thinker_request,
     build_thinker_request,
 )
@@ -86,21 +88,40 @@ def create_aggregate_executor() -> PreprocessingExecutor:
     return PreprocessingExecutor(_identity)
 
 
-def _reject_unsupported_tp_size(stage: str, tp_size: int) -> None:
-    """Stop tp_size>1 paths early, before any local tower is loaded.
+def _create_encoder_executor(
+    *,
+    stage_name: str,
+    model: torch.nn.Module,
+    device: str,
+    use_cache: bool = True,
+    cache_size: int | None = 64,
+    max_batch_size: int = 32,
+    request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+    max_batch_cost: int | None = None,
+) -> EngineExecutor:
+    def _request_builder(payload: StagePayload):
+        state = load_state(payload)
+        return build_encoder_request(state, stage_name=stage_name)
 
-    The :class:`EncoderScheduler` raises NotImplementedError for the same
-    reason during construction; rejecting here avoids paying the cost of
-    loading the local HF tower on the way to that error and keeps the
-    "single source of truth" message tied to issue #375.
-    """
-    if tp_size > 1:
-        raise NotImplementedError(
-            f"Qwen3-Omni {stage} encoder TP (tp_size={tp_size}) is not "
-            "yet supported — the EncoderScheduler scaffold is in place "
-            "but the leader/follower forward path is the next PR. "
-            "Track sglang-project/sglang-omni#375."
-        )
+    def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
+        state = load_state(payload)
+        apply_encoder_result(state, stage_name=stage_name, result=result)
+        return store_state(payload, state)
+
+    engine = create_single_pass_engine(
+        model,
+        device=device,
+        use_cache=use_cache,
+        cache_size=cache_size,
+        cache_max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
+        cache_device="cpu",
+        max_batch_size=max_batch_size,
+        request_cost_fn=request_cost_fn,
+        max_batch_cost=max_batch_cost,
+    )
+    return EngineExecutor(
+        engine=engine, request_builder=_request_builder, result_builder=_result_builder
+    )
 
 
 def create_image_encoder_executor(
@@ -110,28 +131,14 @@ def create_image_encoder_executor(
     dtype: str | None = None,
     max_batch_size: int = 32,
     max_batch_cost: int = QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
-    tp_size: int = 1,
 ) -> EngineExecutor:
-    _reject_unsupported_tp_size("image", tp_size)
-    # Construct the local module eagerly so request_cost_fn can introspect
-    # it; the lambda below hands the same instance to LocalEncoderBackend.
-    local_model = Qwen3OmniImageEncoder(
-        model_path=model_path, device=device, dtype=dtype
-    )
-    return build_encoder_executor(
-        QWEN3_OMNI_IMAGE_ENCODER,
+    model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    return _create_encoder_executor(
         stage_name=IMAGE_STAGE,
-        model_path=model_path,
-        local_module_factory=lambda: local_model,
+        model=model,
         device=device,
-        dtype=_resolve_dtype(dtype),
-        tp_size=tp_size,
         max_batch_size=max_batch_size,
-        use_cache=True,
-        cache_size=64,
-        cache_max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
-        cache_device="cpu",
-        request_cost_fn=create_qwen3_visual_request_cost_fn(local_model),
+        request_cost_fn=create_qwen3_visual_request_cost_fn(model),
         max_batch_cost=max_batch_cost,
     )
 
@@ -142,32 +149,14 @@ def create_audio_encoder_executor(
     device: str = "cuda",
     dtype: str | None = None,
     max_batch_size: int = 32,
-    tp_size: int = 1,
 ) -> EngineExecutor:
-    _reject_unsupported_tp_size("audio", tp_size)
-    return build_encoder_executor(
-        QWEN3_OMNI_AUDIO_ENCODER,
+    model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
+    return _create_encoder_executor(
         stage_name=AUDIO_STAGE,
-        model_path=model_path,
-        local_module_factory=lambda: Qwen3OmniAudioEncoder(
-            model_path=model_path, device=device, dtype=dtype
-        ),
+        model=model,
         device=device,
-        dtype=_resolve_dtype(dtype),
-        tp_size=tp_size,
         max_batch_size=max_batch_size,
-        use_cache=True,
-        cache_size=64,
-        cache_max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
-        cache_device="cpu",
     )
-
-
-def _resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
-    """Resolve a dtype hint without forcing the module factory to run."""
-    from sglang_omni.models.weight_loader import resolve_dtype
-
-    return resolve_dtype(dtype)
 
 
 def create_thinker_executor(
