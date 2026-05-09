@@ -59,6 +59,10 @@ def _apply_stage_server_args_override(
         stage.factory_args = factory_args
 
 
+def _has_stage(pipeline_config: PipelineConfig, stage_name: str) -> bool:
+    return any(stage.name == stage_name for stage in pipeline_config.stages)
+
+
 def _parse_gpu_placement(flag_name: str, value: str) -> int | list[int]:
     text = value.strip()
     if not text:
@@ -233,6 +237,85 @@ def _apply_stage_torch_compile_override(
     )
 
 
+def _validate_mem_fraction_static(flag_name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    if not 0.0 < value < 1.0:
+        raise typer.BadParameter(f"{flag_name} must be > 0 and < 1, got {value}")
+    return float(value)
+
+
+def _apply_optional_stage_mem_fraction_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    value: float | None,
+    explicit_flag: bool,
+    flag_name: str,
+) -> bool:
+    if value is None:
+        return False
+    if not _has_stage(pipeline_config, stage_name):
+        if explicit_flag:
+            raise typer.BadParameter(
+                f"{flag_name} is not supported by pipeline "
+                f"{type(pipeline_config).__name__}."
+            )
+        return False
+
+    _apply_stage_server_args_override(
+        pipeline_config,
+        stage_name=stage_name,
+        updates={"mem_fraction_static": value},
+        reason=f"mem_fraction_static to {value}",
+    )
+    return True
+
+
+def apply_mem_fraction_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    mem_fraction_static: float | None,
+    thinker_mem_fraction_static: float | None,
+    talker_mem_fraction_static: float | None,
+) -> PipelineConfig:
+    global_value = _validate_mem_fraction_static(
+        "--mem-fraction-static", mem_fraction_static
+    )
+    thinker_value = _validate_mem_fraction_static(
+        "--thinker-mem-fraction-static", thinker_mem_fraction_static
+    )
+    talker_value = _validate_mem_fraction_static(
+        "--talker-mem-fraction-static", talker_mem_fraction_static
+    )
+
+    final_thinker_value = thinker_value if thinker_value is not None else global_value
+    final_talker_value = talker_value if talker_value is not None else global_value
+
+    applied = False
+    applied |= _apply_optional_stage_mem_fraction_override(
+        pipeline_config,
+        stage_name="thinker",
+        value=final_thinker_value,
+        explicit_flag=thinker_mem_fraction_static is not None,
+        flag_name="--thinker-mem-fraction-static",
+    )
+    applied |= _apply_optional_stage_mem_fraction_override(
+        pipeline_config,
+        stage_name="talker_ar",
+        value=final_talker_value,
+        explicit_flag=talker_mem_fraction_static is not None,
+        flag_name="--talker-mem-fraction-static",
+    )
+
+    if global_value is not None and not applied:
+        raise typer.BadParameter(
+            "--mem-fraction-static requires a pipeline with a thinker or "
+            "talker_ar stage."
+        )
+    return pipeline_config
+
+
 def apply_cuda_graph_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -314,6 +397,38 @@ def serve(
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
+    mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--mem-fraction-static",
+            help=(
+                "Set SGLang mem_fraction_static for Qwen AR stages "
+                "(thinker and talker_ar)."
+            ),
+        ),
+    ] = None,
+    thinker_mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--thinker-mem-fraction-static",
+            "--thinker_mem_fraction_static",
+            help=(
+                "Set SGLang mem_fraction_static only for the thinker stage. "
+                "Overrides --mem-fraction-static for thinker."
+            ),
+        ),
+    ] = None,
+    talker_mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--talker-mem-fraction-static",
+            "--talker_mem_fraction_static",
+            help=(
+                "Set SGLang mem_fraction_static only for the talker_ar stage. "
+                "Overrides --mem-fraction-static for talker_ar."
+            ),
+        ),
+    ] = None,
     thinker_tp_size: Annotated[
         int | None,
         typer.Option(
@@ -422,6 +537,12 @@ def serve(
         thinker_gpus=thinker_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
+    )
+    merged_config = apply_mem_fraction_cli_overrides(
+        merged_config,
+        mem_fraction_static=mem_fraction_static,
+        thinker_mem_fraction_static=thinker_mem_fraction_static,
+        talker_mem_fraction_static=talker_mem_fraction_static,
     )
     merged_config = apply_cuda_graph_cli_overrides(
         merged_config,
