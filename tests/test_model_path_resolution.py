@@ -229,10 +229,24 @@ def test_resolve_local_model_dir_propagates_unexpected_errors(monkeypatch) -> No
         preprocessor._resolve_local_model_dir("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
 
-def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
-    stages = _import_qwen3_stages_for_test(monkeypatch)
+def _patch_encoder_scheduler_engine(monkeypatch) -> dict[str, object]:
+    """Capture the kwargs ``EncoderScheduler`` forwards into ``OmniEngine``.
+
+    Returns the dict that will be populated when ``create_single_pass_engine``
+    fires inside :class:`EncoderScheduler`, plus mounts the same ``object()``
+    sentinel as the engine instance the scheduler ends up holding.
+    """
     captured: dict[str, object] = {}
-    sentinel_engine = object()
+    sentinel_engine = SimpleNamespace(
+        # Minimum surface area that EncoderScheduler / Engine ABC will
+        # touch during construction; the real OmniEngine is replaced.
+        start=lambda: None,
+        stop=lambda: None,
+        add_request=lambda *a, **kw: None,
+        get_result=lambda *a, **kw: None,
+        abort=lambda *a, **kw: None,
+    )
+    captured["_sentinel"] = sentinel_engine
 
     def fake_create_single_pass_engine(
         model,
@@ -257,33 +271,36 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         captured["max_batch_cost"] = max_batch_cost
         return sentinel_engine
 
-    _patch_module(
-        monkeypatch,
-        stages,
-        create_single_pass_engine=fake_create_single_pass_engine,
+    scheduler_module = importlib.import_module("sglang_omni.encoders.scheduler")
+    monkeypatch.setattr(
+        scheduler_module,
+        "create_single_pass_engine",
+        fake_create_single_pass_engine,
     )
+    return captured
 
-    model = torch.nn.Linear(2, 2)
-    executor = stages._create_encoder_executor(
-        stage_name="image_encoder",
-        model=model,
+
+def test_qwen3_audio_executor_forwards_cache_settings(monkeypatch) -> None:
+    """The audio factory plumbs the QWEN3 cache budget into OmniEngine."""
+    stages = _import_qwen3_stages_for_test(monkeypatch)
+    captured = _patch_encoder_scheduler_engine(monkeypatch)
+    sentinel_engine = captured["_sentinel"]
+
+    executor = stages.create_audio_encoder_executor(
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct",
         device="cuda:1",
-        use_cache=False,
-        cache_size=17,
+        dtype="bfloat16",
+        max_batch_size=7,
     )
 
-    assert captured == {
-        "model": model,
-        "device": "cuda:1",
-        "use_cache": False,
-        "cache_size": 17,
-        "cache_max_bytes": stages.QWEN3_ENCODER_CACHE_MAX_BYTES,
-        "cache_device": "cpu",
-        "max_batch_size": 32,
-        "request_cost_fn": None,
-        "max_batch_cost": None,
-    }
-    assert executor._engine is sentinel_engine
+    assert executor._engine._engine is sentinel_engine
+    assert captured["device"] == "cuda:1"
+    assert captured["use_cache"] is True
+    assert captured["cache_size"] == 64
+    assert captured["cache_max_bytes"] == stages.QWEN3_ENCODER_CACHE_MAX_BYTES
+    assert captured["cache_device"] == "cpu"
+    assert captured["max_batch_size"] == 7
+    assert captured["max_batch_cost"] is None
 
 
 def test_qwen3_image_executor_uses_visual_batch_budget(monkeypatch) -> None:
@@ -291,8 +308,7 @@ def test_qwen3_image_executor_uses_visual_batch_budget(monkeypatch) -> None:
     visual_budget = importlib.import_module(
         "sglang_omni.models.qwen3_omni.pipeline.visual_budget"
     )
-    captured: dict[str, object] = {}
-    sentinel_engine = object()
+    constructor_args: dict[str, object] = {}
 
     class FakeImageEncoder:
         spatial_merge_size = 2
@@ -301,39 +317,17 @@ def test_qwen3_image_executor_uses_visual_batch_budget(monkeypatch) -> None:
         visual_dtype_bytes = 2
 
         def __init__(self, *, model_path: str, device: str, dtype: str | None):
-            captured["model_path"] = model_path
-            captured["model_device"] = device
-            captured["model_dtype"] = dtype
-
-    def fake_create_single_pass_engine(
-        model,
-        *,
-        device: str,
-        use_cache: bool,
-        cache_size: int | None,
-        cache_max_bytes: int | None,
-        cache_device: str | torch.device | None,
-        max_batch_size: int,
-        request_cost_fn,
-        max_batch_cost: int | None,
-    ):
-        captured["model"] = model
-        captured["device"] = device
-        captured["use_cache"] = use_cache
-        captured["cache_size"] = cache_size
-        captured["cache_max_bytes"] = cache_max_bytes
-        captured["cache_device"] = cache_device
-        captured["max_batch_size"] = max_batch_size
-        captured["request_cost_fn"] = request_cost_fn
-        captured["max_batch_cost"] = max_batch_cost
-        return sentinel_engine
+            constructor_args["model_path"] = model_path
+            constructor_args["model_device"] = device
+            constructor_args["model_dtype"] = dtype
 
     _patch_module(
         monkeypatch,
         stages,
         Qwen3OmniImageEncoder=FakeImageEncoder,
-        create_single_pass_engine=fake_create_single_pass_engine,
     )
+    captured = _patch_encoder_scheduler_engine(monkeypatch)
+    sentinel_engine = captured["_sentinel"]
 
     executor = stages.create_image_encoder_executor(
         "Qwen/Qwen3-Omni-30B-A3B-Instruct",
@@ -352,10 +346,10 @@ def test_qwen3_image_executor_uses_visual_batch_budget(monkeypatch) -> None:
         ),
     )
 
-    assert executor._engine is sentinel_engine
-    assert captured["model_path"] == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    assert captured["model_device"] == "cuda:1"
-    assert captured["model_dtype"] == "bfloat16"
+    assert executor._engine._engine is sentinel_engine
+    assert constructor_args["model_path"] == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    assert constructor_args["model_device"] == "cuda:1"
+    assert constructor_args["model_dtype"] == "bfloat16"
     assert captured["device"] == "cuda:1"
     assert captured["max_batch_size"] == 7
     assert (
