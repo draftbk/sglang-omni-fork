@@ -86,6 +86,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -130,6 +131,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -163,6 +165,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -201,6 +204,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -237,6 +241,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -274,6 +279,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -311,6 +317,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -348,6 +355,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -385,6 +393,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -422,6 +431,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -459,6 +469,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
