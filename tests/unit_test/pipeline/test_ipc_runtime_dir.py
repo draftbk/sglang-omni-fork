@@ -11,14 +11,7 @@ import pytest
 import sglang_omni_v1.config.compiler as compiler
 import sglang_omni_v1.pipeline.mp_runner as mp_runner
 import sglang_omni_v1.pipeline.stage.runtime as stage_runtime
-from sglang_omni_v1.config.compiler import (
-    compile_pipeline,
-    compile_pipeline_core,
-    create_ipc_runtime_dir,
-    prepare_pipeline_runtime,
-)
 from sglang_omni_v1.config.schema import EndpointsConfig, PipelineConfig, StageConfig
-from sglang_omni_v1.pipeline.mp_runner import _build_stage_groups
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -54,10 +47,10 @@ def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
     ipc_config = _make_config(tmp_path)
     tcp_config = _make_config(tmp_path, scheme="tcp")
 
-    assert create_ipc_runtime_dir(tcp_config) is None
+    assert compiler.create_ipc_runtime_dir(tcp_config) is None
 
-    runtime_a = create_ipc_runtime_dir(ipc_config)
-    runtime_b = create_ipc_runtime_dir(ipc_config)
+    runtime_a = compiler.create_ipc_runtime_dir(ipc_config)
+    runtime_b = compiler.create_ipc_runtime_dir(ipc_config)
     assert runtime_a is not None
     assert runtime_b is not None
     assert runtime_a.path != runtime_b.path
@@ -72,7 +65,7 @@ def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
 
 def test_compile_pipeline_rejects_unmanaged_ipc(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not manage IPC"):
-        compile_pipeline(_make_config(tmp_path))
+        compiler.compile_pipeline(_make_config(tmp_path))
 
 
 def test_compile_pipeline_core_owns_or_preserves_ipc_runtime_dir(
@@ -88,14 +81,14 @@ def test_compile_pipeline_core_owns_or_preserves_ipc_runtime_dir(
     monkeypatch.setattr(compiler, "_compile_stage", fail_compile_stage)
 
     with pytest.raises(RuntimeError, match="boom"):
-        compile_pipeline_core(config)
+        compiler.compile_pipeline_core(config)
     assert list(tmp_path.iterdir()) == []
 
-    caller_owned = create_ipc_runtime_dir(config)
+    caller_owned = compiler.create_ipc_runtime_dir(config)
     assert caller_owned is not None
     caller_path = caller_owned.path
     with pytest.raises(RuntimeError, match="boom"):
-        compile_pipeline_core(config, ipc_runtime_dir=caller_owned)
+        compiler.compile_pipeline_core(config, ipc_runtime_dir=caller_owned)
     assert caller_path.exists()
     caller_owned.close()
     assert list(tmp_path.iterdir()) == []
@@ -104,7 +97,7 @@ def test_compile_pipeline_core_owns_or_preserves_ipc_runtime_dir(
 def test_compile_pipeline_core_returns_managed_ipc_runtime_dir(
     tmp_path: Path,
 ) -> None:
-    compiled = compile_pipeline_core(_make_config(tmp_path))
+    compiled = compiler.compile_pipeline_core(_make_config(tmp_path))
     runtime_dir = compiled.runtime_dir
     assert runtime_dir is not None
     try:
@@ -120,20 +113,20 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
     tmp_path: Path,
 ) -> None:
     config = _make_config(tmp_path)
-    prep_a = prepare_pipeline_runtime(config)
-    prep_b = prepare_pipeline_runtime(config)
+    prep_a = compiler.prepare_pipeline_runtime(config)
+    prep_b = compiler.prepare_pipeline_runtime(config)
     assert prep_a.runtime_dir is not None
     assert prep_b.runtime_dir is not None
 
     try:
-        groups_a = _build_stage_groups(
+        groups_a = mp_runner._build_stage_groups(
             config,
             FakeMpContext(),
             stages_cfg=prep_a.stages_cfg,
             name_map=prep_a.name_map,
             endpoints=prep_a.endpoints,
         )
-        groups_b = _build_stage_groups(
+        groups_b = mp_runner._build_stage_groups(
             config,
             FakeMpContext(),
             stages_cfg=prep_b.stages_cfg,
