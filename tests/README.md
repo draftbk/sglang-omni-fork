@@ -91,17 +91,17 @@ pytest tests/unit_test -q
 Choose the location by the behavior contract being protected, not by the file
 that happened to contain an older version of the test.
 
-- `unit_test/pipeline/`: Model-agnostic V1 pipeline tests: 
+- `unit_test/pipeline/`: Model-agnostic V1 pipeline tests:
   - compile
-  - runtime wiring 
+  - runtime wiring
   - coordinator behavior
-  - stage routing 
+  - stage routing
   - relay handling
   - IPC lifecycle
   - scheduler batching
   - scheduler errors
   - scheduler concurrency.
-- `unit_test/qwen3_omni/` Qwen3-Omni unit tests:     
+- `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
 
   - public CLI/config behavior
   - SGLang argument builders
@@ -111,10 +111,10 @@ that happened to contain an older version of the test.
   - Code2Wav streaming/cleanup behavior.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
-  - tokenizer/state contracts 
+  - tokenizer/state contracts
   - TTS scheduler behavior
   - model-runner state transitions
   - vocoder batching/trim behavior.
-  
+
 - `unit_test/fixtures/`: Shared fakes. Single-test
   helpers should stay local until a second test needs them.
