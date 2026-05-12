@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from sglang_omni_v1.config.schema import StageConfig
 from sglang_omni_v1.pipeline.stage.runtime import Stage
 from sglang_omni_v1.scheduling.messages import IncomingMessage
-from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
     FakeScheduler,
@@ -49,16 +49,19 @@ def make_stage(
 
 
 def run_scheduler(
-    scheduler: SimpleScheduler,
+    scheduler: Any,
     messages: list[IncomingMessage],
     *,
     output_count: int,
+    before_collect: Callable[[], None] | None = None,
 ) -> list[Any]:
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
     try:
         for message in messages:
             scheduler.inbox.put(message)
+        if before_collect is not None:
+            before_collect()
         return [scheduler.outbox.get(timeout=2.0) for _ in range(output_count)]
     finally:
         scheduler.stop()
