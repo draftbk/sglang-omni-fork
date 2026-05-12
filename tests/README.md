@@ -1,8 +1,4 @@
-# Test Folder Guide
-
-This folder is split by CI lane. Keep tests in the narrowest lane that can
-protect the contract.
-
+## Folder Structure
 ```text
 tests/
 ├── README.md
@@ -35,14 +31,25 @@ tests/
         └── test_vocoder.py
 ```
 
+## How To Add A Test
+
+
+General rules:
+
+- Protect user-visible contracts and component ownership, not incidental implementation structure.
+- Keep imports thin and consistent. If a test monkeypatches a module object,
+  call through that module alias instead of mixing direct symbol imports.
+- Reuse existing helpers and fakes before adding another scheduler, relay, or
+  lifecycle helper.
+- Add a one-sentence docstring to non-obvious contract tests.
+- Do not add root-level `tests/test_*.py` files.
+
+
 ## Root Files
 
 - `README.md`: This file. It explains test ownership and where new tests belong.
 - `__init__.py`: Keeps `tests` importable as a package.
 - `utils.py`: Shared helpers used by docs and model CI tests.
-
-Do not add root-level `test_*.py` files. Root test files are too easy for broad
-pytest discovery to collect accidentally, and they make the CI lane unclear.
 
 ## `data/`
 
@@ -76,20 +83,38 @@ resources.
 Fast contract tests that should run without model downloads or real server
 startup. Keep these focused on the smallest component that owns the behavior.
 
-Current ownership:
-
-- `unit_test/pipeline/`: model-agnostic V1 pipeline contracts, including config
-  compile/runtime wiring, IPC lifecycle, coordinator behavior, stage routing,
-  relay handling, and scheduler batch/error/concurrency semantics.
-- `unit_test/qwen3_omni/`: Qwen3-Omni pipeline state/request contracts, talker
-  contracts, and Code2Wav streaming/cleanup behavior.
-- `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro pipeline/tokenizer/TTS
-  contracts and vocoder batching/trim behavior.
-- `unit_test/fixtures/`: fake schedulers, payload factories, tokenizers, relays,
-  and model doubles shared by the focused unit tests.
-
 Expected command:
 
 ```bash
 pytest tests/unit_test -q
 ```
+Choose the location by the behavior contract being protected, not by the file
+that happened to contain an older version of the test.
+
+- `unit_test/pipeline/`: Model-agnostic V1 pipeline tests: 
+  - compile
+  - runtime wiring 
+  - coordinator behavior
+  - stage routing 
+  - relay handling
+  - IPC lifecycle
+  - scheduler batching
+  - scheduler errors
+  - scheduler concurrency.
+- `unit_test/qwen3_omni/` Qwen3-Omni unit tests:     
+
+  - public CLI/config behavior
+  - SGLang argument builders
+  - memory flag contracts
+  - `PipelineState` request builders
+  - talker behavior
+  - Code2Wav streaming/cleanup behavior.
+
+- `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
+  - tokenizer/state contracts 
+  - TTS scheduler behavior
+  - model-runner state transitions
+  - vocoder batching/trim behavior.
+  
+- `unit_test/fixtures/`: Shared fakes. Single-test
+  helpers should stay local until a second test needs them.
