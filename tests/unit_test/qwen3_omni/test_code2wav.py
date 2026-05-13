@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from sglang_omni_v1.models.qwen3_omni.components.code2wav_scheduler import (
+from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload

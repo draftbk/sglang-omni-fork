@@ -195,8 +195,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         "0",
         "--gpu-talker",
         "1",
-        "--gpu-code-predictor",
-        "1",
         "--gpu-code2wav",
         "1",
         "--port",

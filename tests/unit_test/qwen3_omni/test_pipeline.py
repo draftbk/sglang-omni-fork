@@ -9,24 +9,24 @@ import pytest
 import torch
 import typer
 
-import sglang_omni_v1.models.qwen3_omni.stages as qwen_stages
-from sglang_omni_v1.cli.serve import (
+import sglang_omni.models.qwen3_omni.stages as qwen_stages
+from sglang_omni.cli.serve import (
     apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
 )
-from sglang_omni_v1.config import PipelineConfig, StageConfig
-from sglang_omni_v1.config.compiler import _resolve_factory_args
-from sglang_omni_v1.models.qwen3_omni.config import (
+from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config.compiler import _resolve_factory_args
+from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
-from sglang_omni_v1.models.qwen3_omni.merge import decode_events, merge_for_thinker
-from sglang_omni_v1.models.qwen3_omni.payload_types import PipelineState
-from sglang_omni_v1.models.qwen3_omni.request_builders import (
+from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
+from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     project_preprocessing_to_mm_aggregate,
 )
-from sglang_omni_v1.scheduling.sglang_backend.server_args_builder import (
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
@@ -259,7 +259,7 @@ def test_qwen_cli_rejects_global_mem_fraction_when_pipeline_has_no_supported_rol
             StageConfig(
                 name="preprocessing",
                 factory=(
-                    "sglang_omni_v1.models.qwen3_omni.stages."
+                    "sglang_omni.models.qwen3_omni.stages."
                     "create_preprocessing_executor"
                 ),
                 terminal=True,
@@ -513,7 +513,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
         lambda self, vocab_size: None,
     )
     monkeypatch.setattr(
-        "sglang_omni_v1.models.qwen3_omni.request_builders._compute_mrope_positions",
+        "sglang_omni.models.qwen3_omni.request_builders._compute_mrope_positions",
         fake_mrope,
     )
 

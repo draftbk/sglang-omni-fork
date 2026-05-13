@@ -6,10 +6,10 @@ import asyncio
 
 import torch
 
-from sglang_omni_v1.pipeline import relay_io
-from sglang_omni_v1.pipeline.stage.input import AggregatedInput
-from sglang_omni_v1.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni_v1.proto import DataReadyMessage
+from sglang_omni.pipeline import relay_io
+from sglang_omni.pipeline.stage.input import AggregatedInput
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
     FakeRelay,
