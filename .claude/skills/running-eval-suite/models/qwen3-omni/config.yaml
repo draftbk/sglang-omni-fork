@@ -39,6 +39,7 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval"
 
 default_venv_python:
+  - "/sgl-workspace/sglang-omni/.venv/bin/python"
   - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
   - "/github/home/omni-qwen3/bin/python"
   - "/data/sglang-omni/omni-qwen3/bin/python"
