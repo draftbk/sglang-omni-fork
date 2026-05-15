@@ -148,3 +148,78 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
         assert relay.cleaned[-1] == "req-1"
 
     asyncio.run(_run())
+
+
+def test_stage_routing_failure_completes_with_error() -> None:
+    """Unknown downstream routes should fail the request instead of hanging."""
+
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "missing",
+            endpoints={},
+            scheduler=scheduler,
+            control_plane=control_plane,
+        )
+        stage_obj._active_requests.add("req-1")
+        scheduler.outbox.put(make_result_message("req-1"))
+
+        await stage_obj._drain_outbox()
+
+        completion = control_plane.completions[0]
+        assert completion.success is False
+        assert "unknown downstream stage" in completion.error
+        assert "req-1" not in stage_obj._active_requests
+
+    asyncio.run(_run())
+
+
+def test_stage_rejects_invalid_next_stage_return_type() -> None:
+    """Invalid get_next return values should become explicit request failures."""
+
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: {"bad": "target"},
+            scheduler=scheduler,
+            control_plane=control_plane,
+        )
+        stage_obj._active_requests.add("req-1")
+        scheduler.outbox.put(make_result_message("req-1"))
+
+        await stage_obj._drain_outbox()
+
+        completion = control_plane.completions[0]
+        assert completion.success is False
+        assert "invalid downstream targets" in completion.error
+
+    asyncio.run(_run())
+
+
+def test_stage_stream_routing_failure_completes_with_error() -> None:
+    """Stream output to an unknown target should fail the active request."""
+
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            name="thinker",
+            endpoints={},
+            stream_targets=["talker"],
+            scheduler=scheduler,
+            control_plane=control_plane,
+        )
+        stage_obj._active_requests.add("req-1")
+        scheduler.outbox.put(make_stream_message("req-1", data=torch.tensor([7])))
+
+        await stage_obj._drain_outbox()
+
+        completion = control_plane.completions[0]
+        assert completion.success is False
+        assert "stream routing failed" in completion.error
+
+    asyncio.run(_run())

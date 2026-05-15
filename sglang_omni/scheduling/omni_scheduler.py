@@ -607,9 +607,9 @@ class OmniScheduler:
 
     def _event_loop_normal(self) -> None:
         # Note (Chenyang): yield the GIL when idle so co-located non-AR stages
-        # (encoders, preprocessor) running in sibling threads aren't starved
-        # of Python execution. Without this, in single-process mode the busy
-        # AR scheduler loop pins the GIL and the audio_encoder forward pass
+        # (encoders, preprocessor) running in sibling threads within a process
+        # are not starved of Python execution. Without this, a busy AR
+        # scheduler loop can pin the GIL and the audio_encoder forward pass
         # (which is mostly Python-side dispatch into many small CUDA kernels)
         # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:

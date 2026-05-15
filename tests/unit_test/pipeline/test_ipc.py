@@ -7,12 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-import sglang_omni.config.compiler as compiler
 import sglang_omni.pipeline.mp_runner as mp_runner
-import sglang_omni.pipeline.stage.runtime as stage_runtime
+import sglang_omni.serve.launcher as launcher
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
-from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
+from sglang_omni.pipeline.endpoints import allocate_endpoints, create_ipc_runtime_dir
 
 
 def noop_factory():
@@ -34,13 +35,64 @@ def _make_config(base_path: Path, *, scheme: str = "ipc") -> PipelineConfig:
     )
 
 
-@pytest.fixture(autouse=True)
-def _fake_stage_relay(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        stage_runtime,
-        "create_relay",
-        lambda relay_type, **kwargs: FakeRelay(device=kwargs.get("device", "cpu")),
-    )
+class FakeCoordinator:
+    def __init__(
+        self,
+        completion_endpoint: str,
+        abort_endpoint: str,
+        entry_stage: str,
+        terminal_stages: list[str] | None = None,
+    ) -> None:
+        del abort_endpoint, entry_stage, terminal_stages
+        self.control_plane = SimpleNamespace(completion_endpoint=completion_endpoint)
+        self.registered: dict[str, str] = {}
+        self.stopped = False
+
+    async def start(self) -> None:
+        return None
+
+    async def run_completion_loop(self) -> None:
+        await asyncio.Event().wait()
+
+    def register_stage(self, name: str, endpoint: str) -> None:
+        self.registered[name] = endpoint
+
+    async def shutdown_stages(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class FakeGroup:
+    stage_name = "preprocessing"
+    tp_size = 1
+    processes: list[object] = []
+
+    def __init__(self, leader_endpoint: str) -> None:
+        self.leader_endpoint = leader_endpoint
+        self.shutdown_called = False
+
+    def spawn(self, ctx) -> None:
+        del ctx
+
+    async def wait_ready(self, timeout: float) -> None:
+        del timeout
+
+    def any_dead(self) -> bool:
+        return False
+
+    def dead_summary(self) -> str:
+        return "(none)"
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+def _fake_groups_from_endpoints(*args, **kwargs) -> list[FakeGroup]:
+    del args
+    endpoints = kwargs["endpoints"]
+    return [FakeGroup(endpoints["stage_preprocessing"])]
 
 
 def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
@@ -48,10 +100,10 @@ def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
     ipc_config = _make_config(tmp_path)
     tcp_config = _make_config(tmp_path, scheme="tcp")
 
-    assert compiler.create_ipc_runtime_dir(tcp_config) is None
+    assert create_ipc_runtime_dir(tcp_config) is None
 
-    runtime_a = compiler.create_ipc_runtime_dir(ipc_config)
-    runtime_b = compiler.create_ipc_runtime_dir(ipc_config)
+    runtime_a = create_ipc_runtime_dir(ipc_config)
+    runtime_b = create_ipc_runtime_dir(ipc_config)
     assert runtime_a is not None
     assert runtime_b is not None
     assert runtime_a.path != runtime_b.path
@@ -64,86 +116,43 @@ def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-def test_compile_pipeline_rejects_unmanaged_ipc(tmp_path: Path) -> None:
-    """Preserves rejection when compile_pipeline receives unmanaged IPC config."""
-    with pytest.raises(ValueError, match="does not manage IPC"):
-        compiler.compile_pipeline(_make_config(tmp_path))
+def test_allocate_ipc_endpoints_requires_runtime_dir(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    stages, _, _ = config.apply_fusion()
+
+    with pytest.raises(ValueError, match="requires an IPC runtime dir"):
+        allocate_endpoints(config, stages=stages)
 
 
-def test_compile_pipeline_core_owns_or_preserves_ipc_runtime_dir(
+@pytest.mark.asyncio
+async def test_mp_runner_starts_same_model_instances_with_unique_ipc_endpoints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Preserves owned IPC cleanup and caller-owned IPC directory preservation."""
+    monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
+    monkeypatch.setattr(mp_runner, "_build_stage_groups", _fake_groups_from_endpoints)
+
     config = _make_config(tmp_path)
-
-    def fail_compile_stage(*args, **kwargs):
-        del args, kwargs
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(compiler, "_compile_stage", fail_compile_stage)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        compiler.compile_pipeline_core(config)
-    assert list(tmp_path.iterdir()) == []
-
-    caller_owned = compiler.create_ipc_runtime_dir(config)
-    assert caller_owned is not None
-    caller_path = caller_owned.path
-    with pytest.raises(RuntimeError, match="boom"):
-        compiler.compile_pipeline_core(config, ipc_runtime_dir=caller_owned)
-    assert caller_path.exists()
-    caller_owned.close()
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_compile_pipeline_core_returns_managed_ipc_runtime_dir(
-    tmp_path: Path,
-) -> None:
-    """Preserves managed IPC runtime directory ownership in compiled pipelines."""
-    compiled = compiler.compile_pipeline_core(_make_config(tmp_path))
-    runtime_dir = compiled.runtime_dir
-    assert runtime_dir is not None
-    try:
-        assert runtime_dir.path.exists()
-        assert str(runtime_dir.path) in compiled.stages[0].control_plane.recv_endpoint
-    finally:
-        runtime_dir.close()
-
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
-    tmp_path: Path,
-) -> None:
-    """Preserves unique IPC endpoints across same-model pipeline instances."""
-    config = _make_config(tmp_path)
-    prep_a = compiler.prepare_pipeline_runtime(config)
-    prep_b = compiler.prepare_pipeline_runtime(config)
-    assert prep_a.runtime_dir is not None
-    assert prep_b.runtime_dir is not None
+    runner_a = mp_runner.MultiProcessPipelineRunner(config)
+    runner_b = mp_runner.MultiProcessPipelineRunner(config)
 
     try:
-        groups_a = mp_runner._build_stage_groups(
-            config,
-            FakeMpContext(),
-            stages_cfg=prep_a.stages_cfg,
-            name_map=prep_a.name_map,
-            endpoints=prep_a.endpoints,
-        )
-        groups_b = mp_runner._build_stage_groups(
-            config,
-            FakeMpContext(),
-            stages_cfg=prep_b.stages_cfg,
-            name_map=prep_b.name_map,
-            endpoints=prep_b.endpoints,
-        )
+        await runner_a.start()
+        await runner_b.start()
 
-        assert prep_a.endpoints["completion"] != prep_b.endpoints["completion"]
-        assert groups_a[0].leader_endpoint != groups_b[0].leader_endpoint
+        runtime_dirs = [path for path in tmp_path.iterdir() if path.is_dir()]
+        assert len(runtime_dirs) == 2
+        assert (
+            runner_a.coordinator.control_plane.completion_endpoint
+            != runner_b.coordinator.control_plane.completion_endpoint
+        )
+        assert (
+            runner_a.stage_endpoints["preprocessing"]
+            != runner_b.stage_endpoints["preprocessing"]
+        )
     finally:
-        prep_a.runtime_dir.close()
-        prep_b.runtime_dir.close()
+        await runner_b.stop()
+        await runner_a.stop()
 
     assert list(tmp_path.iterdir()) == []
 
@@ -153,19 +162,12 @@ async def test_mp_runner_cleans_runtime_dir_on_start_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Preserves IPC runtime directory cleanup when runner startup fails."""
-
-    class FailingCoordinator:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-
+    class FailingCoordinator(FakeCoordinator):
         async def start(self) -> None:
             raise RuntimeError("boom")
 
-        async def stop(self) -> None:
-            return None
-
     monkeypatch.setattr(mp_runner, "Coordinator", FailingCoordinator)
+    monkeypatch.setattr(mp_runner, "_build_stage_groups", _fake_groups_from_endpoints)
     runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -179,62 +181,8 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Preserves IPC runtime directory cleanup when the runner stops."""
-
-    class FakeCoordinator:
-        def __init__(
-            self,
-            completion_endpoint: str,
-            abort_endpoint: str,
-            entry_stage: str,
-            terminal_stages: list[str] | None = None,
-        ) -> None:
-            del abort_endpoint, entry_stage, terminal_stages
-            self.control_plane = SimpleNamespace(
-                completion_endpoint=completion_endpoint
-            )
-
-        async def start(self) -> None:
-            return None
-
-        async def run_completion_loop(self) -> None:
-            await asyncio.Event().wait()
-
-        def register_stage(self, name: str, endpoint: str) -> None:
-            del name, endpoint
-
-        async def shutdown_stages(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            return None
-
-    class FakeGroup:
-        stage_name = "preprocessing"
-        leader_endpoint = "ipc://stage.sock"
-        tp_size = 1
-        processes: list[object] = []
-
-        def __init__(self) -> None:
-            self.shutdown_called = False
-
-        def spawn(self, ctx) -> None:
-            del ctx
-
-        async def wait_ready(self, timeout: float) -> None:
-            del timeout
-
-        def any_dead(self) -> bool:
-            return False
-
-        def dead_summary(self) -> str:
-            return "(none)"
-
-        async def shutdown(self) -> None:
-            self.shutdown_called = True
-
-    group = FakeGroup()
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
+    group = FakeGroup("ipc://stage.sock")
     monkeypatch.setattr(mp_runner, "_build_stage_groups", lambda *a, **k: [group])
 
     runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
@@ -245,3 +193,60 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 
     assert group.shutdown_called
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_launcher_stops_runner_when_server_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = False
+
+    class FakeRunner:
+        def __init__(self, config: PipelineConfig):
+            self.config = config
+            self.stage_endpoints = {"preprocessing": "ipc://stage.sock"}
+            self.coordinator = object()
+
+        async def start(self, timeout: float = 120.0) -> None:
+            del timeout
+
+        async def stop(self) -> None:
+            nonlocal stopped
+            stopped = True
+
+    async def fail_serve(self) -> None:
+        del self
+        raise RuntimeError("server failed")
+
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: FastAPI())
+    monkeypatch.setattr(launcher.uvicorn.Server, "serve", fail_serve)
+
+    with pytest.raises(RuntimeError, match="server failed"):
+        await launcher._run_server(_make_config(tmp_path), port=8000)
+
+    assert stopped
+
+
+def test_profiler_route_requires_dir_without_explicit_template() -> None:
+    class FakeProfiler:
+        async def broadcast_start(self, **kwargs) -> None:
+            del kwargs
+
+        async def broadcast_stop(self, **kwargs) -> None:
+            del kwargs
+
+    app = FastAPI()
+    launcher._mount_profiler_routes(app, FakeProfiler(), profiler_dir=None)
+
+    with TestClient(app) as client:
+        response = client.post("/start_profile", json={})
+        assert response.status_code == 400
+
+        response = client.post(
+            "/start_profile",
+            json={"trace_path_template": "/tmp/profile/{run_id}/{stage}"},
+        )
+        assert response.status_code == 200

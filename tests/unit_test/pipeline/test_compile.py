@@ -4,17 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config.compiler import compile_pipeline, prepare_pipeline_runtime
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.pipeline.endpoints import allocate_endpoints
 from sglang_omni.pipeline.mp_runner import _build_stage_groups
-from sglang_omni.pipeline.stage.input import AggregatedInput
-from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_process import get_stage_process_env
-from tests.unit_test.fixtures.pipeline_fakes import (
-    FakeMpContext,
-    FakeRelay,
-    fake_factory_path,
-)
+from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
 
 
@@ -50,17 +44,8 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
         )
 
 
-def test_compile_pipeline_wires_routes_overrides_aggregation_and_streams(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Preserves config-to-runtime wiring for routes, overrides, fan-in, and streams."""
-    import sglang_omni.pipeline.stage.runtime as runtime
-
-    monkeypatch.setattr(
-        runtime,
-        "create_relay",
-        lambda relay_type, **kwargs: FakeRelay(device=kwargs.get("device", "cpu")),
-    )
+def test_stage_group_specs_wire_routes_overrides_aggregation_and_streams() -> None:
+    """Preserves config-to-process wiring for routes, overrides, fan-in, and streams."""
     config = PipelineConfig(
         model_path="global-model",
         name="contract",
@@ -86,16 +71,26 @@ def test_compile_pipeline_wires_routes_overrides_aggregation_and_streams(
         ],
     )
 
-    coordinator, stages = compile_pipeline(config)
-    stage_map = {compiled.name: compiled for compiled in stages}
+    stages_cfg, name_map, entry_stage = config.apply_fusion()
+    endpoints = allocate_endpoints(config, stages=stages_cfg)
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=stages_cfg,
+        name_map=name_map,
+        endpoints=endpoints,
+    )
+    spec_map = {group.stage_name: group.leader_spec for group in groups}
 
-    assert coordinator.entry_stage == "preprocess"
-    assert stage_map["preprocess"].get_next("req", None) == ["thinker", "aggregate"]
-    assert isinstance(stage_map["aggregate"].input_handler, AggregatedInput)
-    assert isinstance(stage_map["talker"]._stream_queue, StreamQueue)
-    assert stage_map["thinker"]._same_gpu_targets == {"talker"}
-    assert stage_map["thinker"].scheduler.model_path == "runtime-model"
-    assert stage_map["thinker"].scheduler.factory_kwargs["extra"] == "rt"
+    assert entry_stage == "preprocess"
+    assert spec_map["preprocess"].next_stages == ["thinker", "aggregate"]
+    assert spec_map["aggregate"].wait_for == ["preprocess", "thinker"]
+    assert spec_map["aggregate"].merge_fn == fake_factory_path("merge_payloads")
+    assert spec_map["talker"].is_stream_receiver
+    assert spec_map["thinker"].stream_targets == ["talker"]
+    assert spec_map["thinker"].same_gpu_targets == {"talker"}
+    assert spec_map["thinker"].factory_args["model_path"] == "runtime-model"
+    assert spec_map["thinker"].factory_args["extra"] == "rt"
 
 
 def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
@@ -115,14 +110,15 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
             )
         ],
     )
-    prep = prepare_pipeline_runtime(config)
+    stages_cfg, name_map, _ = config.apply_fusion()
+    endpoints = allocate_endpoints(config, stages=stages_cfg)
 
     group = _build_stage_groups(
         config,
         ctx=FakeMpContext(),
-        stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
-        endpoints=prep.endpoints,
+        stages_cfg=stages_cfg,
+        name_map=name_map,
+        endpoints=endpoints,
     )[0]
     leader, follower = group.specs
     env = get_stage_process_env(follower, env={"CUDA_VISIBLE_DEVICES": "4,5,6,7"})
@@ -133,3 +129,52 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
     assert follower.factory_args["tp_rank"] == 1
     assert leader.factory_args["nccl_port"] == follower.factory_args["nccl_port"]
     assert env["CUDA_VISIBLE_DEVICES"] == "7"
+
+
+def test_mp_runner_preserves_cpu_stage_without_gpu_assignment() -> None:
+    """CPU stages should not be assigned CUDA device 0 by default."""
+    config = PipelineConfig(
+        model_path="model",
+        name="mp",
+        endpoints=EndpointsConfig(scheme="tcp"),
+        stages=[
+            stage(
+                "preprocess",
+                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+                terminal=True,
+            )
+        ],
+    )
+    stages_cfg, name_map, _ = config.apply_fusion()
+    endpoints = allocate_endpoints(config, stages=stages_cfg)
+
+    group = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=stages_cfg,
+        name_map=name_map,
+        endpoints=endpoints,
+    )[0]
+
+    assert group.leader_spec.gpu_id is None
+    assert "gpu_id" not in group.leader_spec.factory_args
+
+
+def test_mp_runner_rejects_tp_without_explicit_gpu_placement() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        name="mp",
+        endpoints=EndpointsConfig(scheme="tcp"),
+        stages=[stage("thinker", tp_size=2, terminal=True)],
+    )
+    stages_cfg, name_map, _ = config.apply_fusion()
+    endpoints = allocate_endpoints(config, stages=stages_cfg)
+
+    with pytest.raises(ValueError, match="requires explicit gpu placement"):
+        _build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=stages_cfg,
+            name_map=name_map,
+            endpoints=endpoints,
+        )

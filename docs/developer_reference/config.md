@@ -111,9 +111,11 @@ Derived values are computed from stages, not manually maintained:
 `RelayConfig` is the per-stage data-transfer override. It currently contains
 `slot_size_mb`, `credits`, `rank`, `world_size`, and `device`.
 
-## Compiler and Runners
+## Runtime Preparation
 
-The compiler prepares runtime wiring from a pipeline config:
+Runtime preparation is owned by `MultiProcessPipelineRunner`. It turns a
+pipeline config into coordinator endpoints and one `StageGroup` per logical
+stage:
 
 - validate stage names and static topology
 - compute the entry stage and terminal stages
@@ -123,17 +125,14 @@ The compiler prepares runtime wiring from a pipeline config:
 - inject global values such as `model_path` and `gpu_id` into factory args when
   accepted by the factory
 - build relay config from stage placement and relay backend
-- wire stream targets and same-GPU stream fast paths
+- resolve stream targets and same-GPU stream fast paths
 
-Single-process serving uses `compile_pipeline_core()` to build a coordinator and
-in-process `Stage` objects.
-
-Multi-process serving uses `MultiProcessPipelineRunner`. It prepares the same
-runtime state, then builds one `StageGroup` per logical stage. A stage group
-owns one or more OS processes for that logical stage.
+A stage group owns one or more OS processes for that logical stage.
 
 ```text
 pipeline/
+|-- endpoints.py        # IPC runtime dirs and endpoint allocation
+|-- runtime_config.py   # Factory args, relay config, stream target helpers
 |-- stage_process.py    # StageProcessSpec and subprocess entrypoint
 |-- stage_group.py      # StageGroup lifecycle for a logical stage
 `-- mp_runner.py        # Cross-stage orchestration and coordinator ownership

@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -469,20 +470,26 @@ class Stage:
             if out.type == "result":
                 await self._route_result(out.request_id, out.data)
             elif out.type == "stream":
-                if out.target is None:
-                    for target in self._stream_targets:
+                try:
+                    if out.target is None:
+                        for target in self._stream_targets:
+                            await self._send_stream_to_target(
+                                out.request_id,
+                                out.data,
+                                target,
+                                out.metadata,
+                            )
+                    else:
                         await self._send_stream_to_target(
                             out.request_id,
                             out.data,
-                            target,
+                            out.target,
                             out.metadata,
                         )
-                else:
-                    await self._send_stream_to_target(
+                except Exception as exc:
+                    await self._send_failure(
                         out.request_id,
-                        out.data,
-                        out.target,
-                        out.metadata,
+                        f"stream routing failed: {exc}",
                     )
             elif out.type == "error":
                 await self._send_failure(out.request_id, str(out.data))
@@ -512,10 +519,9 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             return
-        # Send stream done to all stream targets
-        for target in self._stream_targets:
-            endpoint = self.endpoints.get(target)
-            if endpoint:
+        try:
+            for target in self._stream_targets:
+                endpoint = self._require_target_endpoint(target)
                 await relay_io.send_stream_signal(
                     self.control_plane,
                     request_id=request_id,
@@ -525,34 +531,63 @@ class Stage:
                     is_done=True,
                 )
 
-        next_stages = self.get_next(request_id, result)
-        if next_stages is None:
-            # Terminal: notify coordinator
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data,
-                )
+            next_stages = self._normalize_next_stages(
+                request_id,
+                self.get_next(request_id, result),
             )
-        else:
-            if isinstance(next_stages, str):
-                next_stages = [next_stages]
-            for target in next_stages:
-                await self._send_to_stage(request_id, target, result)
+            if next_stages is None:
+                await self.control_plane.send_complete(
+                    CompleteMessage(
+                        request_id=request_id,
+                        from_stage=self.name,
+                        success=True,
+                        result=result.data,
+                    )
+                )
+            else:
+                for target in next_stages:
+                    await self._send_to_stage(request_id, target, result)
+        except Exception as exc:
+            await self._send_failure(request_id, f"routing failed: {exc}")
+            return
 
         self._clear_request_state(request_id)
+
+    def _normalize_next_stages(
+        self,
+        request_id: str,
+        next_stages: Any,
+    ) -> list[str] | None:
+        if next_stages is None:
+            return None
+        if isinstance(next_stages, str):
+            return [next_stages]
+        if isinstance(next_stages, list) and all(
+            isinstance(target, str) for target in next_stages
+        ):
+            return next_stages
+        raise TypeError(
+            f"Stage {self.name} returned invalid downstream targets for request "
+            f"{request_id}: expected str | list[str] | None, got "
+            f"{type(next_stages).__name__}"
+        )
+
+    def _require_target_endpoint(self, target: str) -> str:
+        endpoint = self.endpoints.get(target)
+        if endpoint is None:
+            known_targets = ", ".join(sorted(self.endpoints)) or "(none)"
+            raise ValueError(
+                f"Stage {self.name} cannot route to unknown downstream stage "
+                f"{target!r}; known stage endpoints: {known_targets}"
+            )
+        return endpoint
 
     async def _send_to_stage(self, request_id: str, target: str, payload: Any) -> None:
         if not self._owns_external_io:
             raise RuntimeError(
                 f"Follower stage {self.name} cannot send downstream data"
             )
-        endpoint = self.endpoints.get(target)
-        if endpoint is None:
-            logger.warning("Stage %s: no endpoint for %s", self.name, target)
-            return
+        endpoint = self._require_target_endpoint(target)
         projector = self._project_payload.get(target)
         projected_payload = projector(payload) if projector is not None else payload
         metadata, op = await relay_io.write_payload(
@@ -576,9 +611,7 @@ class Stage:
     ) -> None:
         if not self._owns_external_io:
             return
-        endpoint = self.endpoints.get(target)
-        if endpoint is None:
-            return
+        endpoint = self._require_target_endpoint(target)
         key = (request_id, target)
         chunk_id = self._stream_chunk_counters.get(key, 0)
         self._stream_chunk_counters[key] = chunk_id + 1
