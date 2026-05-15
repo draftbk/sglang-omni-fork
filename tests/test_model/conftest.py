@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -106,6 +107,55 @@ def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
     )
     yield ServerHandle(proc=proc, port=port)
     stop_server(proc)
+
+
+def _model_cache_present(model_path: str) -> bool:
+    """Return True iff *model_path* is either a local directory or an
+    already-resolvable HF snapshot. Avoids triggering a multi-GB download
+    on a CI runner that did not opt in.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return False
+    if Path(model_path).exists():
+        return True
+    try:
+        snapshot_download(model_path, local_files_only=True)
+    except Exception:
+        return False
+    return True
+
+
+def resolve_qwen3_omni_model_dir(model_path: str) -> Path:
+    """Return the model directory without triggering a download. Caller is
+    responsible for confirming the cache is populated (see
+    :func:`_model_cache_present`).
+    """
+    if Path(model_path).exists():
+        return Path(model_path)
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(model_path, local_files_only=True))
+
+
+@pytest.fixture(scope="module")
+def cuda_device():
+    """CUDA device for Qwen3-Omni benchmarks. Skips when CUDA is unavailable
+    or the Qwen3-Omni checkpoint is not in the local HF cache."""
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    if not _model_cache_present(QWEN3_OMNI_TEST_MODEL_PATH):
+        pytest.skip(
+            f"{QWEN3_OMNI_TEST_MODEL_PATH} is not in the local HF cache; this "
+            f"benchmark test refuses to auto-download a multi-GB checkpoint. "
+            f"Pre-populate the cache or set SGLANG_OMNI_TEST_QWEN3_MODEL to a "
+            f"local path."
+        )
+    torch.cuda.set_device(0)
+    return torch.device("cuda:0")
 
 
 @pytest.fixture(scope="session")

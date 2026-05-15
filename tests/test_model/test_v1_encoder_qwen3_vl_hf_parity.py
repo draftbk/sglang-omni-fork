@@ -21,46 +21,12 @@ Requires:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 import torch
 
 from tests.test_model.conftest import QWEN3_OMNI_TEST_MODEL_PATH as MODEL_PATH
-
-
-def _model_cache_present(model_path: str) -> bool:
-    """Return True iff the HF snapshot for *model_path* is already on disk.
-
-    Avoids triggering an automatic ~60 GB download on a CI runner that
-    does not opt in. Local string paths and HF cached snapshots are both
-    accepted.
-    """
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        return False
-    if Path(model_path).exists():
-        return True
-    try:
-        snapshot_download(model_path, local_files_only=True)
-    except Exception:
-        return False
-    return True
-
-
-@pytest.fixture(scope="module")
-def cuda_device():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    if not _model_cache_present(MODEL_PATH):
-        pytest.skip(
-            f"{MODEL_PATH} is not in the local HF cache; this benchmark test "
-            f"refuses to auto-download a multi-GB checkpoint. Pre-populate "
-            f"the cache or set SGLANG_OMNI_TEST_QWEN3_MODEL to a local path."
-        )
-    torch.cuda.set_device(0)
-    return torch.device("cuda:0")
+from tests.test_model.conftest import resolve_qwen3_omni_model_dir
 
 
 @pytest.fixture(scope="module")
@@ -73,26 +39,11 @@ def dist_init(cuda_device, qwen3_omni_vision_sglang_env):
     """
 
 
-def _resolve_model_dir(model_path: str) -> Path:
-    """Return the model directory without triggering a download.
-
-    Honors a local-filesystem ``model_path`` (e.g. via
-    ``SGLANG_OMNI_TEST_QWEN3_MODEL=/local/dir``) and otherwise resolves
-    against the HF cache only — the caller-side cache gate has already
-    asserted the cache is populated.
-    """
-    if Path(model_path).exists():
-        return Path(model_path)
-    from huggingface_hub import snapshot_download
-
-    return Path(snapshot_download(model_path, local_files_only=True))
-
-
 def _load_visual_safetensors():
     """Read all ``thinker.visual.*`` weights from the model checkpoint."""
     from safetensors import safe_open
 
-    md = _resolve_model_dir(MODEL_PATH)
+    md = resolve_qwen3_omni_model_dir(MODEL_PATH)
     weight_map = json.loads((md / "model.safetensors.index.json").read_text())[
         "weight_map"
     ]
