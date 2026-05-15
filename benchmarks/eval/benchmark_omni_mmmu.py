@@ -124,12 +124,13 @@ class MMMUEvalConfig:
     repo_id: str | None = None
     prompt_override: str | None = None
     timeout_s: int = 300
-    # Authoritative metadata sources (AC-9): when --preflight-json is
-    # provided, the eval merges model_revision + container_image_digest from
-    # the gate's output rather than computing placeholders. When
-    # --launcher-log is provided, kv_cache_capacity_tokens is scraped from
-    # it. mem_fraction_static and prefix_cache_disabled come straight from
-    # the launch flags the operator used.
+    # Authoritative metadata sources: when --preflight-json is provided,
+    # the eval merges model_revision + container_image_digest from the
+    # gate's output rather than computing placeholders. When --launcher-log
+    # is provided, kv_cache_capacity_tokens is scraped from it.
+    # mem_fraction_static and prefix_cache_disabled come straight from the
+    # launch flags the operator used (and are cross-checked against the
+    # retained launch command).
     preflight_json: str | None = None
     launcher_log: str | None = None
     mem_fraction_static: float | None = None
@@ -180,7 +181,7 @@ def _load_preflight_merge(preflight_json: str | None) -> dict:
 class LaunchPolicyMismatch(RuntimeError):
     """Raised when the eval's declared policy disagrees with preflight evidence.
 
-    AC-9 requires `prefix_cache_disabled` and `mem_fraction_static_configured`
+    The plan requires `prefix_cache_disabled` and `mem_fraction_static_configured`
     to be provable from the actual server launch command, not declared by the
     eval CLI. When preflight retained a `launch_command` and that command's
     flags disagree with the CLI policy, we fail-fast at result construction
@@ -208,9 +209,9 @@ def _derive_launch_policy_from_preflight(
       declarations, raises ``LaunchPolicyMismatch``.
     - When ``preflight_supplied=True`` AND the preflight record is missing
       ``launch_command`` for this container, raises ``LaunchPolicyMismatch``.
-      This closes Codex Round 4's "evidence dropped silently" failure mode:
-      if the operator pointed the eval at a preflight JSON, they get a hard
-      error when that JSON cannot prove the launch policy.
+      This closes the "evidence dropped silently" failure mode: if the
+      operator pointed the eval at a preflight JSON, they get a hard error
+      when that JSON cannot prove the launch policy.
     """
     containers = (preflight.get("containers") or {}) if preflight else {}
     container_record = containers.get(container_name) or {}
@@ -281,7 +282,7 @@ def _build_run_metadata(
     request_results: list | None = None,
     steady_state_gpu_gb: list[float] | None = None,
 ) -> dict:
-    """Populate the AC-9 run-metadata block from authoritative sources.
+    """Populate the run-metadata block from authoritative sources.
 
     - ``model_revision`` and ``container_image_digest``: merged from
       ``preflight.json`` when ``config.preflight_json`` is set (the
@@ -340,11 +341,11 @@ def _build_run_metadata(
         # Fall back to live docker inspect if preflight didn't capture it.
         container_digest = get_container_image_digest(container_name)
 
-    # AC-9 launch policy: derive from preflight's retained launch_command
-    # rather than echoing the eval CLI. This raises LaunchPolicyMismatch
-    # when the CLI claims a policy the launch command did not enforce, AND
-    # when --preflight-json was supplied but the retained record dropped
-    # launch_command (the Round 4 evidence-loss failure mode).
+    # Launch policy: derive from preflight's retained launch_command rather
+    # than echoing the eval CLI. This raises LaunchPolicyMismatch when the
+    # CLI claims a policy the launch command did not enforce, and also when
+    # --preflight-json was supplied but the retained record dropped
+    # launch_command (closing the evidence-loss failure mode).
     (
         mem_fraction_evidence,
         prefix_cache_disabled_evidence,
@@ -367,7 +368,7 @@ def _build_run_metadata(
     if steady_state_gpu_gb is None:
         # Caller did not pre-sample; fall back to right-now sample. The
         # sweep runner calls ``_build_run_metadata`` with the post-warmup
-        # value to satisfy AC-9 "warmup+30s" precisely.
+        # value to satisfy the "warmup+30s" steady-state sampling contract.
         steady_state_gpu_gb = sample_gpu_memory_used_gb()
 
     failure_count = 0
@@ -455,17 +456,17 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
             timeout_s=config.timeout_s,
-            # Streaming runs use read_bufsize=1 per AC-3's literal contract:
-            # per-chunk SSE arrivals are visible to the parser immediately,
-            # without a prefetch window coalescing them.
+            # Streaming runs use read_bufsize=1 per the plan's literal
+            # parser contract: per-chunk SSE arrivals are visible to the
+            # parser immediately, without a prefetch window coalescing them.
             read_bufsize=1 if config.stream else None,
         )
     )
 
-    # Schedule a steady-state GPU memory sample for warmup_complete + 30s
-    # (AC-9). The sampler thread is launched from BenchmarkRunner's
-    # post_warmup_hook so its 30s sleep is anchored at warmup completion,
-    # not at run start (which would include the warmup wall time).
+    # Schedule a steady-state GPU memory sample for warmup_complete + 30s.
+    # The sampler thread is launched from BenchmarkRunner's post-warmup
+    # hook so its 30s sleep is anchored at warmup completion, not at run
+    # start (which would include the warmup wall time).
     steady_state_gpu_holder: dict[str, list[float]] = {"value": []}
     sampler_thread_holder: dict[str, threading.Thread | None] = {"thread": None}
 
@@ -545,8 +546,8 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
     Lane A: natural EOS; max_tokens defaults to 2048 (user may override).
     Lane B: fixed-length decode-throughput parity. ignore_eos=True and
     max_tokens=256 are NON-NEGOTIABLE — explicit overrides are rejected
-    so the comparison stays apples-to-apples. This locks the AC-10
-    contract that "Lane B is config-only, not a default".
+    so the comparison stays apples-to-apples. This locks the lane-B
+    contract that fixed-length decode parity is config-only, not a default.
     """
     lane = args.lane.upper()
     if lane == "B":
@@ -557,9 +558,9 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
                 f"the override or switch to --lane A."
             )
         if args.ignore_eos is False:
-            # Plan AC-10: ignore_eos is implied by Lane B and cannot be
-            # opted out of. We accept --ignore-eos as a no-op redundancy
-            # but never let it land False here.
+            # ignore_eos is implied by Lane B and cannot be opted out of.
+            # We accept --ignore-eos as a no-op redundancy but never let it
+            # land False here.
             pass
         ignore_eos = True
         max_tokens = 256
@@ -777,8 +778,7 @@ def main() -> None:
         default=None,
         help=(
             "Path to the server launcher log. When provided, the eval "
-            "scrapes kv_cache_capacity_tokens from it for the AC-9 "
-            "metadata block."
+            "scrapes kv_cache_capacity_tokens from it into the run-metadata block."
         ),
     )
     parser.add_argument(
@@ -787,7 +787,7 @@ def main() -> None:
         default=None,
         help=(
             "Configured mem_fraction_static at server launch (passed through "
-            "to the AC-9 metadata block). The eval does NOT enforce this on "
+            "to the run-metadata block). The eval does NOT enforce this on "
             "the server; the operator must have launched the server with "
             "the matching --mem-fraction-static flag."
         ),

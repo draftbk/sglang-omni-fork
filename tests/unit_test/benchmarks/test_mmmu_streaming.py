@@ -234,11 +234,10 @@ def test_parser_role_only_and_final_usage_yield_no_ttft() -> None:
 
 
 def test_parser_raises_on_trailing_unterminated_frame() -> None:
-    """AC-3 negative: a stream ending with `data: <json>` (no `\\n\\n`) raises.
-
-    Without this guard the parser silently drops the partial frame and
-    callers cannot tell whether their stream was truncated. AC-3 explicitly
-    requires the rejection.
+    """Parser-contract negative: a stream ending with `data: <json>` (no
+    `\\n\\n`) raises. Without this guard the parser silently drops the
+    partial frame and callers cannot tell whether their stream was
+    truncated. The plan explicitly requires the rejection.
     """
     role_frame = _sse_frame(
         {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}
@@ -443,7 +442,7 @@ def test_default_seed_and_ignore_eos_absent() -> None:
 def test_cross_backend_text_content_is_equal() -> None:
     """Both backends carry the same MMMU prompt text after image-tag stripping.
 
-    AC-2: the only request-shape delta between omni and sglang is the
+    Payload contract: the only request-shape delta between omni and sglang is the
     image-attachment convention; the text content must be byte-identical
     so accuracy comparisons are not corrupted by prompt drift.
     """
@@ -514,8 +513,8 @@ def test_assert_sglang_payload_order_contract_accepts_correct_order() -> None:
 def test_assert_sglang_payload_order_contract_rejects_text_first() -> None:
     """A hand-built text-first SGLang payload is rejected by the validator.
 
-    AC-11 negative: this is the explicit ``text-first SGLang fails order``
-    case Codex flagged. The validator exists so contract violations from
+    Payload-order negative: this is the explicit ``text-first SGLang fails
+    order`` case. The validator exists so contract violations from
     any caller (not just build_mmmu_payload) get caught.
     """
     bad_payload = {
@@ -585,11 +584,11 @@ def test_request_result_offsets_list_is_per_instance() -> None:
 
 
 def test_client_wall_results_do_not_emit_tok_per_s_agg() -> None:
-    """AC-5 negative: a client-wall RequestResult no longer emits the
-    ambiguous ``tok_per_s_agg`` key. After Round 2 migration, only the
-    truthful ``tok_per_s_clientwall_agg`` aggregate is reported for the
-    client-wall path. Legacy `tok_per_s_agg` is retained only for
-    results that genuinely lack a timing_source."""
+    """Aggregate-key negative: a client-wall RequestResult no longer emits
+    the ambiguous ``tok_per_s_agg`` key. After the schema migration, only
+    the truthful ``tok_per_s_clientwall_agg`` aggregate is reported for
+    the client-wall path. The legacy ``tok_per_s_agg`` is retained only
+    for results that genuinely lack a timing_source."""
     from benchmarks.metrics.performance import compute_speed_metrics
 
     r = RequestResult(
@@ -610,7 +609,7 @@ def test_client_wall_results_do_not_emit_tok_per_s_agg() -> None:
 
 
 def test_engine_results_emit_only_engine_agg() -> None:
-    """AC-5 symmetric: engine-timed (TTS) results emit only the engine
+    """Aggregate-key symmetric: engine-timed (TTS) results emit only the engine
     aggregate, not the ambiguous legacy key."""
     from benchmarks.metrics.performance import compute_speed_metrics
 
@@ -630,7 +629,7 @@ def test_engine_results_emit_only_engine_agg() -> None:
 
 
 def test_post_warmup_hook_fires_after_warmup_loop() -> None:
-    """AC-9 timing contract: BenchmarkRunner invokes post_warmup_hook
+    """Timing contract: BenchmarkRunner invokes post_warmup_hook
     exactly once after warmup completes and before measured dispatch
     starts. This is the anchor point the steady-state GPU sampler uses
     so its 30s sleep covers `warmup_complete + 30s`, not `run_start + 30s`.
@@ -722,7 +721,7 @@ def test_legacy_results_still_emit_tok_per_s_agg() -> None:
 
 
 def test_request_result_to_dict_preserves_empty_streaming_fields() -> None:
-    """AC-4 negative: non-streaming runs keep [] and 0, not null/null."""
+    """Schema negative: non-streaming runs keep [] and 0, not null/null."""
     from benchmarks.metrics.performance import _request_result_to_dict
 
     r = RequestResult(request_id="r", is_success=True, latency_s=0.1)

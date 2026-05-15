@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Round 4 AC-7 regression: every post-launch preflight verification stage
+"""Preflight remote-routing regression: every post-launch verification stage
 must route over SSH when ``--host`` is set, never read orchestrator-local
-state. Codex flagged that ``probe_v1_models``, ``probe_sglang_data_uri``,
-and ``verify_launcher_log_references_snapshot`` all silently used local
-URLs / local filesystem reads even after Round 3 wired some other probes
-to ``--host``.
+state. ``probe_v1_models``, ``probe_sglang_data_uri``, and
+``verify_launcher_log_references_snapshot`` all need the same host
+parameter so the gate actually verifies the machine that launched the
+container, not the orchestrator.
 """
 
 from __future__ import annotations
@@ -179,12 +179,12 @@ def test_verify_launcher_log_remote_fails_when_ssh_errors() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 5 regression: AC-9 launch evidence must survive check_container.
-# Codex Round 4 found that the prior `report.containers[name] = info`
-# wholesale-overwrote any `launch_command` written by an earlier
-# `launch_named_container` call, silently dropping the AC-9 evidence the
-# eval needs. This test runs the real serialization shape and asserts the
-# field persists.
+# Launch-evidence preservation regression. A prior version used
+# `report.containers[name] = info` which wholesale-overwrote any
+# `launch_command` written by an earlier `launch_named_container` call,
+# silently dropping the evidence the eval needs to derive launch policy.
+# This test runs the real serialization shape and asserts the field
+# persists across the inspection pass.
 # ---------------------------------------------------------------------------
 
 
@@ -226,7 +226,7 @@ def test_check_container_preserves_launch_command_from_earlier_launch() -> None:
     # The post-check record must still carry the launch_command + snapshot.
     final = report.containers[container_name]
     assert final.get("launch_command") == expected_launch_cmd, (
-        "check_container wholesale-overwrote launch_command (Codex Round 4 bug)"
+        "check_container wholesale-overwrote launch_command (evidence-loss bug)"
     )
     assert final.get("snapshot_path") == "/snapshots/abc123"
     # The inspect-stage fields are also present.

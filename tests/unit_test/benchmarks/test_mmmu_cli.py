@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI argparse + lane-semantics tests for benchmark_omni_mmmu.
 
-The lane-A / lane-B contract is non-negotiable (AC-10): Lane B forces
+The lane-A / lane-B contract is non-negotiable: Lane B forces
 ``ignore_eos=True`` and ``max_tokens=256``; explicit overrides are
 rejected. The ``--stream`` × ``--enable-audio`` cross-product is also
-rejected (AC-1). These tests exercise the argparse → MMMUEvalConfig
+rejected. These tests exercise the argparse → MMMUEvalConfig
 resolution to lock those guarantees.
 """
 
@@ -121,7 +121,7 @@ def test_lane_a_optional_ignore_eos() -> None:
 
 
 def test_run_metadata_contains_all_ac9_fields() -> None:
-    """AC-9 validator: the emitted run-metadata block has every required key."""
+    """Schema validator: the emitted run-metadata block has every required key."""
     from benchmarks.eval.benchmark_omni_mmmu import (
         MMMUEvalConfig,
         _build_run_metadata,
@@ -155,7 +155,7 @@ def test_run_metadata_routes_container_by_backend() -> None:
 
 
 def test_run_metadata_merges_model_revision_from_preflight_json(tmp_path) -> None:
-    """AC-9 value-source: model_revision comes from preflight.json when provided."""
+    """Value-source: model_revision comes from preflight.json when provided."""
     import json
 
     from benchmarks.eval.benchmark_omni_mmmu import (
@@ -171,7 +171,7 @@ def test_run_metadata_merges_model_revision_from_preflight_json(tmp_path) -> Non
         "containers": {
             "sglang-omni-hayden-benchmark": {
                 "container_image_digest": "sha256:deadbeef",
-                # Round 5 strict fail-fast: preflight_json runs require
+                # Strict fail-fast: preflight_json runs require
                 # launch_command to derive launch policy from evidence.
                 "launch_command": [
                     "docker", "run", "-d", "--name",
@@ -194,7 +194,7 @@ def test_run_metadata_merges_model_revision_from_preflight_json(tmp_path) -> Non
 
 
 def test_run_metadata_loads_dataset_revisions() -> None:
-    """AC-9 value-source: dataset_revisions comes from the JSON pin file."""
+    """Value-source: dataset_revisions comes from the JSON pin file."""
     from benchmarks.eval.benchmark_omni_mmmu import (
         MMMUEvalConfig,
         _build_run_metadata,
@@ -209,7 +209,7 @@ def test_run_metadata_loads_dataset_revisions() -> None:
 
 
 def test_run_metadata_scrapes_kv_capacity_from_launcher_log(tmp_path) -> None:
-    """AC-9 value-source: kv_cache_capacity_tokens comes from launcher log."""
+    """Value-source: kv_cache_capacity_tokens comes from the launcher log."""
     from benchmarks.eval.benchmark_omni_mmmu import (
         MMMUEvalConfig,
         _build_run_metadata,
@@ -227,7 +227,7 @@ def test_run_metadata_scrapes_kv_capacity_from_launcher_log(tmp_path) -> None:
 
 
 def test_run_metadata_records_mem_fraction_and_prefix_cache_policy() -> None:
-    """AC-9 value-source: mem_fraction + prefix_cache come from launch flags."""
+    """Value-source: mem_fraction + prefix_cache come from launch flags."""
     from benchmarks.eval.benchmark_omni_mmmu import (
         MMMUEvalConfig,
         _build_run_metadata,
@@ -245,7 +245,7 @@ def test_run_metadata_records_mem_fraction_and_prefix_cache_policy() -> None:
 
 
 def test_launch_policy_evidence_matches_cli(tmp_path) -> None:
-    """AC-9 evidence path: preflight launch_command flags are the source.
+    """Evidence path: preflight launch_command flags are the source.
 
     When preflight retained a launch_command with --mem-fraction-static
     and --disable-radix-cache, the eval pulls the policy values from
@@ -311,7 +311,7 @@ def test_launch_policy_missing_evidence_falls_back_to_cli(tmp_path) -> None:
 
 
 def test_launch_policy_mismatch_raises(tmp_path) -> None:
-    """AC-9 fail-fast: when the launch command disagrees with CLI policy,
+    """Fail-fast: when the launch command disagrees with CLI policy,
     metadata construction raises so the artifact cannot self-assert an
     unverified policy."""
     import json
@@ -353,11 +353,11 @@ def test_launch_policy_mismatch_raises(tmp_path) -> None:
 
 
 def test_launch_policy_missing_launch_command_with_preflight_raises(tmp_path) -> None:
-    """Round 5 AC-9 fail-fast: when --preflight-json IS supplied but the
-    container record lacks launch_command, the eval must raise rather
-    than silently echo CLI declarations. This closes the Codex Round 4
-    failure mode where check_container overwrote launch_command and the
-    eval silently fell back to CLI values.
+    """Fail-fast: when --preflight-json IS supplied but the container record
+    lacks launch_command, the eval must raise rather than silently echo CLI
+    declarations. This closes the failure mode where a wholesale-overwrite
+    in check_container dropped launch_command and the eval silently fell
+    back to CLI values.
     """
     import json
 
@@ -458,7 +458,7 @@ def test_launch_policy_mismatch_prefix_cache_raises(tmp_path) -> None:
 
 
 def test_run_metadata_failure_count_from_request_results() -> None:
-    """AC-9 value-source: failure_count comes from request_results, not 0."""
+    """Value-source: failure_count comes from request_results, not 0."""
     from benchmarks.benchmarker.data import RequestResult
     from benchmarks.eval.benchmark_omni_mmmu import (
         MMMUEvalConfig,

@@ -222,7 +222,7 @@ def parse_multi_choice_response(
 
 
 def assert_sglang_payload_order_contract(payload: dict) -> None:
-    """Validate an SGLang-style payload obeys AC-2's image-then-text order.
+    """Validate an SGLang-style payload obeys the image-then-text part order.
 
     Mirrors ``Qwen3OmniPreprocessor._build_multimodal_messages`` at
     ``sglang_omni/models/qwen3_omni/components/preprocessor.py:158``,
@@ -406,7 +406,7 @@ async def consume_sse_stream(
         if saw_done:
             break
 
-    # AC-3 negative: any bytes remaining in the buffer when the stream ends
+    # Parser contract negative: any bytes remaining in the buffer when the stream ends
     # mean the server emitted a partial frame without its terminating
     # ``\n\n``. That violates the SSE framing contract and would otherwise
     # cause the parser to silently drop a frame.

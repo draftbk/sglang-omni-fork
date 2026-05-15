@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Round 4 AC-10 gate: validate_mmmu_artifacts.py is a hard sweep gate.
+"""Artifact gate tests: validate_mmmu_artifacts.py is a hard sweep gate.
 
 The validator drives from sweep-status.jsonl. For every status row it
 requires the cell directory to exist with the full bundle (mmmu_results
 .json, preflight.json, launcher.log, stderr.log), the run_metadata to
-carry all REQUIRED_FIELDS, the live AC-9 fields to be non-empty for
+carry all REQUIRED_FIELDS, the live metadata fields to be non-empty for
 successful rows, and the status row's container_image_digest to be
 non-empty and equal to the cell's run_metadata digest.
 """
@@ -233,9 +233,10 @@ def test_validator_fails_on_digest_mismatch(tmp_path) -> None:
 
 
 def test_validator_fails_when_preflight_missing_launch_command(tmp_path) -> None:
-    """Round 5 AC-9 evidence enforcement: a cell whose retained preflight.json
+    """Launch-evidence enforcement: a cell whose retained preflight.json
     is missing `launch_command` for its container is rejected. This closes
-    the Codex Round 4 evidence-loss path.
+    the evidence-loss path where the eval could silently fall back to CLI
+    declarations.
     """
     out_root = tmp_path / "sweep"
     cell = out_root / "lane_A" / "omni" / "rep_0"

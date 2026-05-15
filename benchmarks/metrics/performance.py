@@ -293,7 +293,7 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         ),
         "tok_per_s": round(output.tok_per_s, 1) if output.tok_per_s > 0 else None,
         # Streaming fields preserve their default zero/empty values for
-        # non-streaming runs (per AC-4) so a JSON consumer can distinguish
+        # non-streaming runs so a JSON consumer can distinguish
         # "streaming ran with no content" from "no streaming at all" by
         # checking ttft_s (None when not streamed).
         "ttft_s": round(output.ttft_s, 4) if output.ttft_s is not None else None,

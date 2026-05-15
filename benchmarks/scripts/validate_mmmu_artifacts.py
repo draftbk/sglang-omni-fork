@@ -2,15 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate a finished MMMU sweep's retained artifact bundle.
 
-Status-JSONL-driven contract (Round 4): the source of truth for what
+Status-JSONL-driven contract: the source of truth for what
 cells the sweep attempted is ``sweep-status.jsonl``. Every status row
 must point at a ``cell_dir`` that contains a complete bundle
 (``mmmu_results.json`` + ``preflight.json`` + ``launcher.log`` +
 ``stderr.log``). Every ``mmmu_results.json`` discovered on disk must
 have a matching status row. Container digests in the status row must
-be non-empty and equal the cell's run_metadata digest. All AC-9
-``REQUIRED_FIELDS`` must be present under ``run_metadata`` and the
-live fields must be non-null. Any failed condition fails the sweep
+be non-empty and equal the cell's run_metadata digest. All
+``REQUIRED_FIELDS`` from the run-metadata schema must be present under
+``run_metadata`` and the live fields must be non-null. Any failed
+condition fails the sweep
 report path with a non-zero exit.
 
 Failed reps (``status: failed`` in the status JSONL) keep their cell
@@ -78,7 +79,7 @@ def _validate_launch_command(
 ) -> list[str]:
     """Assert the retained preflight has a launch_command with required flags.
 
-    AC-9 requires `prefix_cache_disabled` / `mem_fraction_static_configured`
+    The plan requires `prefix_cache_disabled` / `mem_fraction_static_configured`
     to be provable from launch evidence. The validator enforces that the
     retained preflight JSON contains, for each cell's container, a
     `launch_command` that includes ``--disable-radix-cache`` and a
@@ -157,13 +158,13 @@ def _validate_status_row(row: dict) -> list[str]:
             issues.append(f"{row_label}: run_metadata missing key {key!r}")
 
     if row.get("status") == "success":
-        # Successful rows must have live AC-9 fields. Failed rows preserve
+        # Successful rows must have the live metadata fields. Failed rows preserve
         # whatever partial state they captured but are not required to.
         for key in LIVE_REQUIRED:
             value = meta.get(key)
             if value is None or value == [] or value == {}:
                 issues.append(
-                    f"{row_label}: live AC-9 field {key!r} is empty/None ({value!r})"
+                    f"{row_label}: live metadata field {key!r} is empty/None ({value!r})"
                 )
 
     # Digest cross-check: row digest non-empty and equal to meta digest.
@@ -180,7 +181,7 @@ def _validate_status_row(row: dict) -> list[str]:
                 f"run_metadata digest {meta_digest!r}"
             )
 
-    # AC-9 launch-evidence enforcement: open the cell's retained preflight.json
+    # Launch-evidence enforcement: open the cell's retained preflight.json
     # and require launch_command + the contracted policy flags for the
     # container that actually served this cell.
     if row.get("status") == "success":

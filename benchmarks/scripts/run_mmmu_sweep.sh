@@ -24,7 +24,7 @@
 #     in parallel (~1.5 GPU-h for 3 reps).
 #   serial single-host (--serial): both lanes on the same host (~3 GPU-h).
 #
-# AC-9 metadata threading: each cell's benchmark_omni_mmmu invocation
+# Authoritative metadata threading: each cell's benchmark_omni_mmmu invocation
 # receives --preflight-json, --launcher-log, --mem-fraction-static so the
 # resulting mmmu_results.json carries real model_revision, container
 # digest, KV capacity, mem-fraction, and prefix-cache policy. After the
@@ -34,7 +34,7 @@
 # run_metadata block, not from an orchestrator-local docker inspect (which
 # would return the wrong digest in parallel-by-lane mode).
 #
-# Failure policy (AC-10): each rep's success/failure is appended to
+# Failure policy: each rep's success/failure is appended to
 # <out>/sweep-status.jsonl. Failed reps are NOT silently retried.
 
 set -euo pipefail
@@ -139,7 +139,7 @@ preflight_on_host() {
 if [[ "$SKIP_PREFLIGHT" -eq 0 ]]; then
     # Always preflight each host that will run cells. Even in serial mode the
     # single chosen host needs --launch + log capture before any benchmark
-    # traffic; otherwise AC-7's launcher-log verification has no log to read.
+    # traffic; otherwise the launcher-log verification has no log to read.
     PREFLIGHT_HOSTS=()
     if [[ "$SERIAL" -eq 0 ]] && [[ "${LANES,,}" == "both" ]]; then
         PREFLIGHT_HOSTS+=("$HOST_LANE_A" "$HOST_LANE_B")
@@ -172,7 +172,7 @@ run_cell() {
         container_image="lmsysorg/sglang"
     fi
 
-    # All AC-9 source flags are threaded into the eval. Paths refer to the
+    # All metadata-source flags are threaded into the eval. Paths refer to the
     # host's filesystem (preflight wrote them there).
     local cmd=(
         python -m benchmarks.eval.benchmark_omni_mmmu
@@ -212,7 +212,7 @@ run_cell() {
             status=failed
         fi
         # Copy back the result JSON, plus preflight + launcher log so the
-        # retained bundle is self-contained and the AC-9 metadata in the
+        # retained bundle is self-contained and the run-metadata in the
         # JSON can be cross-checked against its source files.
         scp -q -r "${host}:${remote_dir}/." "${cell_dir}/" 2>>"$stderr_log" || true
         scp -q "${host}:${PREFLIGHT_REMOTE}" "${cell_dir}/preflight.json" 2>>"$stderr_log" || true

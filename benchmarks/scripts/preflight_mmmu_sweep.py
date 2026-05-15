@@ -6,7 +6,7 @@ Verifies that everything the sweep depends on is bit-pinned and
 contractually correct before any GPU time is spent. Failures here are
 designed to be louder and earlier than failures during the sweep itself.
 
-What the gate verifies (AC-7):
+What the gate verifies:
 
 1. HuggingFace model revisions for ``Qwen/Qwen3-VL-30B-A3B-Instruct`` and
    ``Qwen/Qwen3-Omni-30B-A3B-Instruct`` resolve and are recorded.
@@ -175,11 +175,11 @@ def check_container(
                 f"Container {name!r} is running image {image_ref!r}, expected {expected_image!r}. "
                 f"Stop/remove the container and restart from the contracted image."
             )
-    # AC-9 evidence preservation: merge into the existing record so any
+    # Launch-evidence preservation: merge into the existing record so any
     # `launch_command` / `snapshot_path` written by an earlier
-    # ``launch_named_container`` call survives this inspection pass. Round 4
-    # left this as a wholesale `=` assignment, which silently dropped the
-    # launch evidence Codex flagged.
+    # ``launch_named_container`` call survives this inspection pass. A
+    # wholesale `=` assignment here would silently drop the launch
+    # evidence the downstream eval needs to derive launch policy.
     report.containers.setdefault(name, {}).update(info)
 
 
@@ -221,7 +221,7 @@ def _build_test_image_data_uri() -> str:
 def probe_sglang_data_uri(
     base_url: str, model: str, host: str | None = None
 ) -> dict[str, Any]:
-    """POST a minimal image_url request to the SGLang server. AC-7 step 6.
+    """POST a minimal image_url request to the SGLang server (data-URI probe).
 
     When ``host`` is set, the curl runs over SSH so the probe verifies the
     same machine that launched the container.
@@ -334,10 +334,10 @@ def verify_launcher_log_references_snapshot(
 ) -> bool:
     """Return True iff the launcher log mentions the expected snapshot path.
 
-    AC-7 step (d): once a server is launched with ``--model-path <snapshot>``
-    its launcher log must record the path. This grep proves the running
-    server actually loaded from the pinned snapshot, not from some other
-    local checkpoint or the HF cache via a different revision.
+    Once a server is launched with ``--model-path <snapshot>`` its launcher
+    log must record the path. This grep proves the running server actually
+    loaded from the pinned snapshot, not from some other local checkpoint
+    or the HF cache via a different revision.
 
     When ``host`` is set, the log is read over SSH from the host that
     launched the container. Otherwise read from the orchestrator's local
@@ -388,9 +388,9 @@ def launch_named_container(
 ) -> bool:
     """Launch one benchmark container and tee its launcher log to disk.
 
-    Implements AC-7 step (c): the gate actually starts the contracted
-    container and captures its launcher output so AC-7 step (d) can grep
-    for the resolved snapshot path. The capture uses
+    Implements the launch step of the gate: actually starts the
+    contracted container and captures its launcher output so the
+    snapshot-path log-grep can run afterwards. The capture uses
     ``docker logs -f <name> > <log_path> 2>&1`` because the container
     itself runs detached (``-d``), so the only way to retain its stdout
     is to attach a follower. The follower runs in the background; the
@@ -425,8 +425,9 @@ def launch_named_container(
         image,
         *server_cmd,
     ]
-    # Record the exact command so AC-9's prefix_cache_disabled / mem_fraction
-    # values can be cross-checked against the actual launch flags later.
+    # Record the exact command so the downstream prefix_cache_disabled /
+    # mem_fraction metadata values can be cross-checked against the
+    # actual launch flags later.
     if record is not None:
         record["launch_command"] = run_cmd
         record["snapshot_path"] = snapshot_path
@@ -534,10 +535,11 @@ def print_launch_commands(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Preflight gate for the MMMU sweep.")
-    # Removed in Round 4: --host-lane-a / --host-lane-b were never actually
-    # wired into the per-stage verification; the sweep ssh's into each host
-    # and invokes preflight once per host with --host. Keeping them as dead
-    # options invited "launch on host X, verify on host Y" footguns.
+    # Note: a previous iteration carried --host-lane-a / --host-lane-b
+    # options here. They were never wired into the per-stage verification;
+    # the sweep ssh's into each host and invokes preflight once per host
+    # with --host. Keeping them as dead options invited "launch on host X,
+    # verify on host Y" footguns and they have been removed.
     p.add_argument(
         "--base-url-omni",
         default="http://localhost:30000",
@@ -598,7 +600,7 @@ def parse_args() -> argparse.Namespace:
         "any existing container with the same name is removed first). "
         "Each container's stdout/stderr is captured via "
         "`docker logs -f` redirected to the corresponding --launcher-log-* "
-        "path, so AC-7 step (d) (log grep for snapshot path) can run. "
+        "path, so the snapshot-path log grep can run afterwards. "
         "Combine with --host <hostname> to launch on a remote H200 over SSH; "
         "the sweep orchestrator (run_mmmu_sweep.sh) uses this mode "
         "automatically with one preflight invocation per host.",
@@ -639,7 +641,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="Pass --disable-radix-cache to both server launch commands "
-        "so AC-9's prefix_cache_disabled is enforced by launch flag, not "
+        "so the metadata's prefix_cache_disabled is enforced by launch flag, not "
         "just declared by metadata (default: True).",
     )
     p.add_argument(
@@ -665,7 +667,7 @@ def parse_args() -> argparse.Namespace:
 def _check_launcher_logs(
     args: argparse.Namespace, report: PreflightReport
 ) -> None:
-    """Verify launcher logs reference resolved snapshot paths (AC-7 step d).
+    """Verify launcher logs reference resolved snapshot paths.
 
     With ``--strict-log-check`` set (sweep mode), every missing or
     non-matching log is fatal. Without the flag (operator dev mode),
@@ -763,7 +765,7 @@ def main() -> int:
                         f"huggingface-cli download failed for {repo_id} @ {sha}: {exc}"
                     )
             else:
-                # AC-7 requires fail-closed when the snapshot does not exist.
+                # The gate fails closed when the snapshot does not exist.
                 # The sweep cannot run against unpinned weights and the
                 # preflight is the gate that prevents that.
                 report.fail(
@@ -773,7 +775,7 @@ def main() -> int:
                 )
 
     # 1b. Optional: actually launch the contracted containers and capture
-    # their launcher logs. AC-7 step (c) -- replaces the Round 1
+    # their launcher logs — replaces the earlier
     # print-commands half-step with real execution. Failure here is fatal
     # because the rest of the gate has no servers to probe.
     if args.launch and report.ok:

@@ -29,7 +29,7 @@ class RunConfig:
     timeout_s: int = 300
     # read_bufsize controls aiohttp ClientSession's read buffer size in bytes.
     # When None, aiohttp's default (~64 KiB) is used. Streaming MMMU sweeps
-    # set this to ``1`` per AC-3's literal contract so per-chunk SSE frames
+    # set this to ``1`` per the plan's literal parser contract so per-chunk SSE frames
     # arrive at the parser without being coalesced behind a prefetch window.
     # The underlying TCP read still pulls MTU-sized chunks; this knob signals
     # intent and tightens the application-visible buffer high-watermark.
@@ -63,7 +63,7 @@ class BenchmarkRunner:
 
         ``post_warmup_hook`` (when provided) is invoked exactly once after
         the warmup loop completes and before measured dispatch begins. The
-        AC-9 steady-state GPU sampler hooks in here so its 30s sleep is
+        The steady-state GPU sampler hooks in here so its 30s sleep is
         anchored at ``warmup_complete``, not ``run_start`` (which would
         include warmup wall time).
         """

@@ -198,7 +198,7 @@ def _make_state_stub():
 
 
 def test_build_sglang_thinker_request_passes_ignore_eos_to_upstream() -> None:
-    """AC-10 final-hop: build_sglang_thinker_request forwards
+    """Final-hop: build_sglang_thinker_request forwards
     ``ignore_eos=True`` into the upstream SGLang ``SamplingParams(...)``
     at ``request_builders.py:347``. Runs without the real SGLang
     runtime via sys.modules stubs."""

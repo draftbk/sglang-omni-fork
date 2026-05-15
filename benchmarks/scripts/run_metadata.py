@@ -29,7 +29,7 @@ from typing import Any
 
 @dataclass
 class RunMetadata:
-    """All fields required by AC-9 of the issue #379 closure plan."""
+    """All fields required by the run-metadata block of the issue #379 closure plan."""
 
     # Code SHAs
     commit_sha: str | None = None
@@ -146,7 +146,7 @@ def sample_gpu_memory_used_gb() -> list[float]:
 
     Returns an empty list when nvidia-smi is unavailable (e.g. on a macOS
     dev box). Callers that need authoritative numbers should call this
-    at ``warmup_complete + 30s`` per AC-9.
+    at ``warmup_complete + 30s`` per the plan's steady-state contract.
     """
     if shutil.which("nvidia-smi") is None:
         return []
