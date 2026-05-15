@@ -140,10 +140,7 @@ def qwen3_omni_vision_sglang_env():
     from sglang.srt.models.qwen3_omni_moe import (  # noqa: F401 -- lazy-import order
         Qwen3OmniMoeVisionEncoder,
     )
-    from sglang.srt.server_args import (
-        ServerArgs,
-        set_global_server_args_for_scheduler,
-    )
+    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 
     if not torch_dist.is_initialized():
         init_distributed_environment(
