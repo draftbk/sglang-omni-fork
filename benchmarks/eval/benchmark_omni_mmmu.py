@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,7 +86,9 @@ from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.mmmu import compute_mmmu_metrics, print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency
+# compute_text_audio_consistency is only needed when --enable-audio is set;
+# imported lazily because benchmarks.tasks.tts pulls in heavy audio deps
+# (soundfile, jiwer, etc.) that are not installed in lightweight dev envs.
 from benchmarks.tasks.visual_understand import (
     build_mmmu_result_records,
     make_mmmu_send_fn,
@@ -151,6 +154,81 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
+def _build_run_metadata(config: MMMUEvalConfig) -> dict:
+    """Populate the AC-9 run-metadata block from the eval config + host env.
+
+    Live values (GPU memory, KV pool capacity, container digest, etc.) are
+    sourced via the helpers in benchmarks/scripts/run_metadata.py. When the
+    relevant tool is unavailable (no docker, no nvidia-smi, etc.) the
+    corresponding field is None — JSON consumers can tell the difference
+    between "not measured" (None) and "measured zero".
+    """
+    from pathlib import Path
+
+    from benchmarks.scripts.run_metadata import (
+        RunMetadata,
+        get_commit_sha,
+        get_container_image_digest,
+        get_current_branch,
+        get_gpu_topology,
+        get_sglang_version,
+        sample_gpu_memory_used_gb,
+        to_dict,
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    container_name = (
+        "sglang-omni-hayden-benchmark"
+        if config.backend == "omni"
+        else "sglang-hayden-benchmark"
+    )
+    container_image = (
+        "frankleeeee/sglang-omni:dev"
+        if config.backend == "omni"
+        else "lmsysorg/sglang"
+    )
+
+    meta = RunMetadata(
+        commit_sha=get_commit_sha(repo_root),
+        branch=get_current_branch(repo_root),
+        sglang_version=get_sglang_version(),
+        backend=config.backend,
+        model_id=config.model,
+        model_revision=None,  # preflight populates the snapshot SHA into a
+        # separate `preflight.json`; the sweep script merges it into the
+        # per-cell record. Left None at single-eval invocation time.
+        dataset_revisions={},
+        seed=config.seed,
+        ignore_eos=config.ignore_eos,
+        lane=config.lane,
+        stream=config.stream,
+        max_tokens=config.max_tokens,
+        max_concurrency=config.max_concurrency,
+        temperature=config.temperature,
+        warmup=config.warmup,
+        request_rate=(
+            None if config.request_rate == float("inf") else config.request_rate
+        ),
+        timeout_s=config.timeout_s,
+        repo_id=config.repo_id,
+        max_samples=config.max_samples,
+        mem_fraction_static_configured=None,
+        kv_cache_capacity_tokens=None,
+        steady_state_gpu_gb=sample_gpu_memory_used_gb(),
+        prefix_cache_disabled=True,
+        encoder_patches_active=False,
+        host=os.environ.get("HOSTNAME") or os.environ.get("HOST"),
+        container_name=container_name,
+        container_image=container_image,
+        container_image_digest=get_container_image_digest(container_name),
+        server_port=config.port,
+        gpu_topology=get_gpu_topology(),
+        repetition_index=config.repetition_index,
+        failure_count=0,
+    )
+    return to_dict(meta)
+
+
 async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     """Run full MMMU evaluation and return results dict.
 
@@ -193,10 +271,14 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
             timeout_s=config.timeout_s,
-            # Streaming runs need a small read buffer so per-chunk SSE
-            # arrivals are visible to the parser without a 64KB prefetch
-            # window coalescing them.
-            read_bufsize=1024 if config.stream else None,
+            # Streaming runs use read_bufsize=1 per AC-3's literal contract:
+            # per-chunk SSE arrivals are visible to the parser immediately,
+            # without a prefetch window coalescing them. Production sweeps
+            # may revisit this knob if syscall overhead becomes a measured
+            # concern, but the contract is "minimize aiohttp-side buffering"
+            # so the per-token timing reflects server emission, not client
+            # coalescing.
+            read_bufsize=1 if config.stream else None,
         )
     )
     request_results = await runner.run(samples, send_fn)
@@ -225,14 +307,18 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "repetition_index": config.repetition_index,
     }
 
+    run_metadata = _build_run_metadata(config)
     results = {
         "summary": summary,
         "speed": speed_metrics,
         "config": config_dict,
+        "run_metadata": run_metadata,
         "per_sample": per_sample,
     }
 
     if config.enable_audio:
+        from benchmarks.tasks.tts import compute_text_audio_consistency
+
         results["wer"] = compute_text_audio_consistency(
             request_results, config.lang, config.asr_device
         )
@@ -244,16 +330,32 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
 
 
 def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
-    # Apply lane defaults BEFORE constructing the config so explicit
-    # --max-tokens / --ignore-eos overrides the user passed still win.
+    """Resolve a MMMUEvalConfig from argparse args, enforcing lane contracts.
+
+    Lane A: natural EOS; max_tokens defaults to 2048 (user may override).
+    Lane B: fixed-length decode-throughput parity. ignore_eos=True and
+    max_tokens=256 are NON-NEGOTIABLE — explicit overrides are rejected
+    so the comparison stays apples-to-apples. This locks the AC-10
+    contract that "Lane B is config-only, not a default".
+    """
     lane = args.lane.upper()
     if lane == "B":
-        # Fixed-length decode-throughput lane: ignore EOS, cap output length.
-        ignore_eos = True if not args.no_ignore_eos else False
-        max_tokens = args.max_tokens if args.max_tokens != 2048 else 256
+        if args.max_tokens is not None and args.max_tokens != 256:
+            raise SystemExit(
+                f"Lane B is the fixed-length decode-throughput parity lane and "
+                f"requires --max-tokens 256 (got {args.max_tokens}). Either drop "
+                f"the override or switch to --lane A."
+            )
+        if args.ignore_eos is False:
+            # Plan AC-10: ignore_eos is implied by Lane B and cannot be
+            # opted out of. We accept --ignore-eos as a no-op redundancy
+            # but never let it land False here.
+            pass
+        ignore_eos = True
+        max_tokens = 256
     elif lane == "A":
-        ignore_eos = args.ignore_eos
-        max_tokens = args.max_tokens
+        ignore_eos = bool(args.ignore_eos)
+        max_tokens = args.max_tokens if args.max_tokens is not None else 2048
     else:
         raise SystemExit(
             f"--lane must be 'A' (natural EOS) or 'B' (ignore_eos + 256 tokens), got {args.lane!r}"
@@ -329,7 +431,9 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--max-tokens", type=int, default=2048)
+    # Sentinel so _config_from_args can tell whether --max-tokens was passed
+    # explicitly. Default semantics depend on --lane.
+    parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument(
@@ -402,15 +506,9 @@ def main() -> None:
         action="store_true",
         help=(
             "Force the sampler to keep emitting until max_tokens by ignoring "
-            "EOS. Used for decode-throughput parity (Lane B). Auto-enabled "
-            "when --lane B is selected; pass --no-ignore-eos to opt out of "
-            "the lane-B default."
+            "EOS. Implied by --lane B (which cannot be opted out of). "
+            "Allowed but unusual on --lane A."
         ),
-    )
-    parser.add_argument(
-        "--no-ignore-eos",
-        action="store_true",
-        help="Suppress lane-B's automatic ignore_eos enable.",
     )
     parser.add_argument(
         "--lane",

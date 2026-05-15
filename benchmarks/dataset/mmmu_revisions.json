@@ -1,5 +1,9 @@
 {
   "$schema_version": 1,
-  "description": "HuggingFace dataset revision SHAs per repo for MMMU benchmarking. The MMMU benchmark loader fails closed when a repo is loaded without a revision entry, forcing the preflight gate (benchmarks/scripts/preflight_mmmu_sweep.py) to populate or refresh this file before any sweep runs. Edit by running the preflight with --update-revisions; do not handcraft SHAs.",
-  "revisions": {}
+  "description": "HuggingFace dataset revision SHAs per repo for MMMU benchmarking. The MMMU benchmark loader fails closed when a repo is loaded without a revision entry, forcing the preflight gate (benchmarks/scripts/preflight_mmmu_sweep.py --update-revisions) to populate or refresh this file before any sweep runs. SHAs below were resolved against HuggingFace main branches on 2026-05-15.",
+  "resolved_at": "2026-05-15",
+  "revisions": {
+    "MMMU/MMMU": "4619a102cf5ad2da1abf7e220fde1258d2434cb7",
+    "zhaochenyang20/mmmu-ci-50": "ff72fd69cc7e0719e04a0ddb12d160de89c6fefe"
+  }
 }

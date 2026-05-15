@@ -36,6 +36,7 @@ from PIL import Image
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.mmmu import MMMUSample
 from benchmarks.tasks.visual_understand import (
+    assert_sglang_payload_order_contract,
     build_mmmu_payload,
     consume_sse_stream,
 )
@@ -94,20 +95,41 @@ class _FakeClock:
         return val
 
 
+class _FakeAsyncIterator:
+    """Awaitable async iterator with explicit aclose support."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self._index = 0
+        self._closed = False
+
+    def __aiter__(self) -> "_FakeAsyncIterator":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed or self._index >= len(self._chunks):
+            raise StopAsyncIteration
+        chunk = self._chunks[self._index]
+        self._index += 1
+        return chunk
+
+    async def aclose(self) -> None:
+        self._closed = True
+
+
 class _FakeResponseContent:
-    """Mimics aiohttp.StreamReader.iter_any() with scripted byte chunks."""
+    """Mimics aiohttp.StreamReader.iter_any() with scripted byte chunks.
+
+    Returns a fully awaitable async iterator (with ``aclose``) so test
+    teardown does not leak a pending coroutine and pytest does not warn
+    about un-awaited ``aclose``.
+    """
 
     def __init__(self, chunks: Iterable[bytes]) -> None:
         self._chunks = list(chunks)
 
-    def iter_any(self):
-        chunks = list(self._chunks)
-
-        async def _gen():
-            for chunk in chunks:
-                yield chunk
-
-        return _gen()
+    def iter_any(self) -> _FakeAsyncIterator:
+        return _FakeAsyncIterator(list(self._chunks))
 
 
 class _FakeResponse:
@@ -209,6 +231,33 @@ def test_parser_role_only_and_final_usage_yield_no_ttft() -> None:
     assert result.content_chunk_offsets_ms == []
     assert result.text == ""
     assert result.prompt_tokens == 3
+
+
+def test_parser_raises_on_trailing_unterminated_frame() -> None:
+    """AC-3 negative: a stream ending with `data: <json>` (no `\\n\\n`) raises.
+
+    Without this guard the parser silently drops the partial frame and
+    callers cannot tell whether their stream was truncated. AC-3 explicitly
+    requires the rejection.
+    """
+    role_frame = _sse_frame(
+        {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}
+    )
+    # A "content" frame that is missing its terminating \n\n.
+    unterminated = (
+        b"data: "
+        + json.dumps(
+            {"choices": [{"delta": {"content": "lost"}, "finish_reason": None}]}
+        ).encode("utf-8")
+    )
+    response = _FakeResponse([role_frame, unterminated])
+    clock = _FakeClock([])
+
+    result = RequestResult(request_id="rx")
+    with pytest.raises(RuntimeError, match="unterminated"):
+        asyncio.new_event_loop().run_until_complete(
+            consume_sse_stream(response, result, request_send_time=0.0, clock=clock)
+        )
 
 
 def test_parser_slim_final_does_not_duplicate_text() -> None:
@@ -391,6 +440,113 @@ def test_default_seed_and_ignore_eos_absent() -> None:
     assert "ignore_eos" not in payload
 
 
+def test_cross_backend_text_content_is_equal() -> None:
+    """Both backends carry the same MMMU prompt text after image-tag stripping.
+
+    AC-2: the only request-shape delta between omni and sglang is the
+    image-attachment convention; the text content must be byte-identical
+    so accuracy comparisons are not corrupted by prompt drift.
+    """
+    sample = _make_sample("cross", n_images=3, prompt="parity prompt")
+    common = {
+        "model_name": "qwen3",
+        "modalities": ["text"],
+        "max_tokens": 2048,
+        "temperature": 0.0,
+        "stream": False,
+        "enable_audio": False,
+    }
+    omni = build_mmmu_payload(sample, backend="omni", **common)
+    sglang = build_mmmu_payload(sample, backend="sglang", **common)
+    omni_text = omni["messages"][0]["content"]
+    sglang_text_parts = [
+        p["text"] for p in sglang["messages"][0]["content"] if p["type"] == "text"
+    ]
+    assert len(sglang_text_parts) == 1
+    assert omni_text == sglang_text_parts[0]
+
+
+def test_omni_backend_reorder_detection() -> None:
+    """Reordering omni's images list changes the stable-JSON hash."""
+    sample = _make_sample("omni-reorder", n_images=3, prompt="omni reorder")
+    args = {
+        "model_name": "qwen3-omni",
+        "backend": "omni",
+        "modalities": ["text"],
+        "max_tokens": 2048,
+        "temperature": 0.0,
+        "stream": False,
+        "enable_audio": False,
+    }
+    original = build_mmmu_payload(sample, **args)
+    swapped = MMMUSample(
+        sample_id=sample.sample_id,
+        question=sample.question,
+        options=sample.options,
+        answer=sample.answer,
+        images=list(reversed(sample.images)),
+        subject=sample.subject,
+        prompt=sample.prompt,
+        all_choices=sample.all_choices,
+        index2ans=sample.index2ans,
+        question_type=sample.question_type,
+    )
+    reordered = build_mmmu_payload(swapped, **args)
+    assert _stable_hash(original) != _stable_hash(reordered)
+
+
+def test_assert_sglang_payload_order_contract_accepts_correct_order() -> None:
+    """The contract validator passes a well-formed sglang payload."""
+    sample = _make_sample("order", n_images=2)
+    payload = build_mmmu_payload(
+        sample,
+        "qwen3-vl",
+        backend="sglang",
+        modalities=["text"],
+        max_tokens=2048,
+        temperature=0.0,
+        stream=False,
+        enable_audio=False,
+    )
+    assert_sglang_payload_order_contract(payload)  # does not raise
+
+
+def test_assert_sglang_payload_order_contract_rejects_text_first() -> None:
+    """A hand-built text-first SGLang payload is rejected by the validator.
+
+    AC-11 negative: this is the explicit ``text-first SGLang fails order``
+    case Codex flagged. The validator exists so contract violations from
+    any caller (not just build_mmmu_payload) get caught.
+    """
+    bad_payload = {
+        "model": "qwen3-vl",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "this comes BEFORE the images"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aaa"},
+                    },
+                ],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="text"):
+        assert_sglang_payload_order_contract(bad_payload)
+
+
+def test_assert_sglang_payload_order_contract_rejects_string_content() -> None:
+    """An sglang payload whose content is still a string also fails."""
+    bad = {
+        "model": "x",
+        "messages": [{"role": "user", "content": "plain string instead of parts"}],
+    }
+    with pytest.raises(ValueError, match="part-list"):
+        assert_sglang_payload_order_contract(bad)
+
+
 def test_unsupported_backend_raises() -> None:
     sample = _make_sample("bad", n_images=1)
     with pytest.raises(ValueError, match="backend"):
@@ -416,7 +572,7 @@ def test_request_result_streaming_fields_default_safe() -> None:
     assert r.ttft_s is None
     assert r.content_chunk_offsets_ms == []
     assert r.content_chunk_count == 0
-    assert r.client_wall_time_s == 0.0
+    assert r.client_wall_time_s is None
     assert r.timing_source == ""
 
 
@@ -426,3 +582,16 @@ def test_request_result_offsets_list_is_per_instance() -> None:
     b = RequestResult()
     a.content_chunk_offsets_ms.append(1.0)
     assert b.content_chunk_offsets_ms == []
+
+
+def test_request_result_to_dict_preserves_empty_streaming_fields() -> None:
+    """AC-4 negative: non-streaming runs keep [] and 0, not null/null."""
+    from benchmarks.metrics.performance import _request_result_to_dict
+
+    r = RequestResult(request_id="r", is_success=True, latency_s=0.1)
+    d = _request_result_to_dict(r)
+    # ttft_s remains None when never set (signals "no streaming").
+    assert d["ttft_s"] is None
+    # offsets list and count stay at their empty defaults (not coerced to None).
+    assert d["content_chunk_offsets_ms"] == []
+    assert d["content_chunk_count"] == 0

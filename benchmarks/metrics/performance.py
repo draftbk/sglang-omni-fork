@@ -44,7 +44,9 @@ def _compute_token_metrics(successes: list[RequestResult]) -> dict:
     clientwall_timed = [
         o
         for o in successes
-        if o.timing_source == "client_wall_time_s" and o.client_wall_time_s > 0
+        if o.timing_source == "client_wall_time_s"
+        and o.client_wall_time_s is not None
+        and o.client_wall_time_s > 0
     ]
     legacy_timed = [
         o for o in successes if o.timing_source == "" and o.engine_time_s > 0
@@ -64,18 +66,30 @@ def _compute_token_metrics(successes: list[RequestResult]) -> dict:
             )
     if clientwall_timed:
         clientwall_tokens = sum(o.completion_tokens for o in clientwall_timed)
-        clientwall_time = sum(o.client_wall_time_s for o in clientwall_timed)
+        clientwall_time = sum(
+            o.client_wall_time_s or 0.0 for o in clientwall_timed
+        )
         if clientwall_time > 0 and clientwall_tokens > 0:
             token_metrics["tok_per_s_clientwall_agg"] = round(
                 clientwall_tokens / clientwall_time, 1
             )
-    # Legacy fallback for results that never set timing_source. Reuses the old
-    # ``tok_per_s_agg`` key so unmigrated callers keep working.
+    # Legacy fallback for results that never set timing_source.
     if legacy_timed and not engine_timed and not clientwall_timed:
         legacy_tokens = sum(o.completion_tokens for o in legacy_timed)
         legacy_time = sum(o.engine_time_s for o in legacy_timed)
         if legacy_time > 0 and legacy_tokens > 0:
             token_metrics["tok_per_s_agg"] = round(legacy_tokens / legacy_time, 1)
+    # Backward-compat alias: emit ``tok_per_s_agg`` mirroring whichever
+    # specific bucket populated, so unmigrated CI thresholds + helpers
+    # under ``tests/utils.py`` keep working until they migrate. New code
+    # should read the explicit ``tok_per_s_engine_agg`` /
+    # ``tok_per_s_clientwall_agg`` keys.
+    if "tok_per_s_agg" not in token_metrics:
+        alias = token_metrics.get("tok_per_s_clientwall_agg") or token_metrics.get(
+            "tok_per_s_engine_agg"
+        )
+        if alias is not None:
+            token_metrics["tok_per_s_agg"] = alias
 
     if gen_token_counts:
         token_metrics["gen_tokens_mean"] = round(float(np.mean(gen_token_counts)), 0)
@@ -280,14 +294,18 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "timing_source": output.timing_source or None,
         "engine_time_s": round(output.engine_time_s, 4) if output.engine_time_s else None,
         "client_wall_time_s": (
-            round(output.client_wall_time_s, 4) if output.client_wall_time_s else None
+            round(output.client_wall_time_s, 4)
+            if output.client_wall_time_s is not None
+            else None
         ),
         "tok_per_s": round(output.tok_per_s, 1) if output.tok_per_s > 0 else None,
+        # Streaming fields preserve their default zero/empty values for
+        # non-streaming runs (per AC-4) so a JSON consumer can distinguish
+        # "streaming ran with no content" from "no streaming at all" by
+        # checking ttft_s (None when not streamed).
         "ttft_s": round(output.ttft_s, 4) if output.ttft_s is not None else None,
-        "content_chunk_offsets_ms": (
-            output.content_chunk_offsets_ms if output.content_chunk_offsets_ms else None
-        ),
-        "content_chunk_count": output.content_chunk_count or None,
+        "content_chunk_offsets_ms": list(output.content_chunk_offsets_ms),
+        "content_chunk_count": output.content_chunk_count,
         "wav_path": output.wav_path or None,
         "error": output.error or None,
     }

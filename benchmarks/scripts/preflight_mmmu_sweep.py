@@ -38,9 +38,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-import io
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -271,6 +269,63 @@ def verify_dataset_revisions(report: PreflightReport, path: Path, repos: list[st
 # ---------------------------------------------------------- main entrypoint
 
 
+def verify_launcher_log_references_snapshot(
+    log_path: Path, expected_snapshot: str
+) -> bool:
+    """Return True iff the launcher log mentions the expected snapshot path.
+
+    AC-7 step (d): once a server is launched with ``--model-path <snapshot>``
+    its launcher log must record the path. This grep proves the running
+    server actually loaded from the pinned snapshot, not from some other
+    local checkpoint or the HF cache via a different revision.
+
+    Returns False if the file is missing, unreadable, or never mentions the
+    expected path string.
+    """
+    if not log_path.exists():
+        return False
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        return False
+    return expected_snapshot in text
+
+
+def print_launch_commands(
+    snapshot_omni: str | None,
+    snapshot_sglang: str | None,
+    port_omni: int,
+    port_sglang: int,
+) -> None:
+    """Print the docker run commands the H200 host operator must execute.
+
+    The preflight does not exec docker run itself: that requires GPU
+    access, network egress to docker hub, and persistent log paths the
+    operator owns. Instead, the gate prints the exact contracted
+    commands so the operator can copy-paste them under a tee that
+    preserves the launcher log for the AC-7 step (d) verification.
+    """
+    print("# --- Container launch commands (run on the target H200 host) ---")
+    if snapshot_omni:
+        print(
+            f"docker run -d --name sglang-omni-hayden-benchmark "
+            f"--gpus all --network host "
+            f"-v {snapshot_omni}:/snapshot:ro "
+            f"frankleeeee/sglang-omni:dev "
+            f"sgl-omni serve --model-path /snapshot --text-only --port {port_omni} "
+            f"2>&1 | tee /tmp/sglang-omni-benchmark.log"
+        )
+    if snapshot_sglang:
+        print(
+            f"docker run -d --name sglang-hayden-benchmark "
+            f"--gpus all --network host "
+            f"-v {snapshot_sglang}:/snapshot:ro "
+            f"lmsysorg/sglang "
+            f"python -m sglang.launch_server --model-path /snapshot --port {port_sglang} "
+            f"2>&1 | tee /tmp/sglang-benchmark.log"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Preflight gate for the MMMU sweep.")
     p.add_argument("--host-lane-a", default="ion8-omni")
@@ -309,6 +364,37 @@ def parse_args() -> argparse.Namespace:
         help="Skip docker inspect / /v1/models probes (for dev-machine dry-runs).",
     )
     p.add_argument(
+        "--launcher-log-omni",
+        default=None,
+        help="Path to the sglang-omni server launcher log. When provided, the "
+        "preflight greps it for the resolved snapshot path to prove the "
+        "running server actually loaded from the pinned snapshot.",
+    )
+    p.add_argument(
+        "--launcher-log-sglang",
+        default=None,
+        help="Path to the sglang server launcher log (same purpose).",
+    )
+    p.add_argument(
+        "--print-launch-commands",
+        action="store_true",
+        help="Emit the docker run commands the operator should execute on "
+        "the H200 host to start the two named containers with snapshot "
+        "pinning, then exit. Useful as a sanity step before the live launch.",
+    )
+    p.add_argument(
+        "--port-omni",
+        type=int,
+        default=30000,
+        help="Port the sglang-omni container should listen on (default: 30000).",
+    )
+    p.add_argument(
+        "--port-sglang",
+        type=int,
+        default=30001,
+        help="Port the sglang container should listen on (default: 30001).",
+    )
+    p.add_argument(
         "--output",
         default=str(REPO_ROOT / "results" / "preflight_mmmu_sweep.json"),
         help="Where to write the JSON report.",
@@ -316,9 +402,61 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _check_launcher_logs(
+    args: argparse.Namespace, report: PreflightReport
+) -> None:
+    """Verify launcher logs reference resolved snapshot paths (AC-7 step d)."""
+    pairs = [
+        ("omni", args.launcher_log_omni, "Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+        ("sglang", args.launcher_log_sglang, "Qwen/Qwen3-VL-30B-A3B-Instruct"),
+    ]
+    for backend_tag, log_path, repo_id in pairs:
+        if not log_path:
+            report.warn(
+                f"--launcher-log-{backend_tag} not provided; cannot verify the "
+                f"{backend_tag} server actually loaded the pinned snapshot."
+            )
+            continue
+        snapshot = report.snapshot_paths.get(repo_id)
+        if not snapshot:
+            report.fail(
+                f"No resolved snapshot path for {repo_id}, so the {backend_tag} "
+                f"launcher-log verification cannot run."
+            )
+            continue
+        if not verify_launcher_log_references_snapshot(Path(log_path), snapshot):
+            report.fail(
+                f"{backend_tag} launcher log at {log_path} does not reference the "
+                f"resolved snapshot path {snapshot}. The container is not loading "
+                f"from the pinned model — abort before any benchmark traffic runs."
+            )
+
+
 def main() -> int:
     args = parse_args()
     report = PreflightReport()
+
+    # Optional: emit docker run commands and exit. Used by the operator to
+    # sanity-check the launch contract before issuing the commands by hand
+    # on the H200 host.
+    if args.print_launch_commands:
+        # We still need resolved snapshot paths for the commands; do a fast
+        # HF lookup pass without container probes.
+        snapshots: dict[str, str | None] = {}
+        for _, repo_id in DEFAULT_MODELS:
+            sha = resolve_hf_revision(repo_id)
+            if sha:
+                snapshot_dirname = f"models--{repo_id.replace('/', '--')}"
+                snapshots[repo_id] = str(
+                    Path(args.snapshot_root) / snapshot_dirname / "snapshots" / sha
+                )
+        print_launch_commands(
+            snapshots.get("Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+            snapshots.get("Qwen/Qwen3-VL-30B-A3B-Instruct"),
+            args.port_omni,
+            args.port_sglang,
+        )
+        return 0
 
     # 1. Model revision resolution.
     for backend_tag, repo_id in DEFAULT_MODELS:
@@ -355,9 +493,13 @@ def main() -> int:
                         f"huggingface-cli download failed for {repo_id} @ {sha}: {exc}"
                     )
             else:
-                report.warn(
+                # AC-7 requires fail-closed when the snapshot does not exist.
+                # The sweep cannot run against unpinned weights and the
+                # preflight is the gate that prevents that.
+                report.fail(
                     f"Snapshot for {repo_id} @ {sha} not found at {snapshot_path}. "
-                    f"Pass --download to materialize it, or pre-populate the cache."
+                    f"Re-run with --download to materialize it, or pre-populate "
+                    f"the HF cache before the sweep launches."
                 )
 
     # 2. Container checks (skippable for dev-box dry-runs).
@@ -400,6 +542,11 @@ def main() -> int:
                 f"payload translator emits data: URIs; either swap to a tiny local "
                 f"file-server fallback or upgrade SGLang."
             )
+
+    # 4b. Launcher log verification — proves the server actually loaded
+    # from the pinned snapshot, not from a stale local checkpoint.
+    if not args.skip_container_check:
+        _check_launcher_logs(args, report)
 
     # 5. Dataset revision pinning.
     rev_path = REPO_ROOT / "benchmarks" / "dataset" / "mmmu_revisions.json"

@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: Apache-2.0
+"""CLI argparse + lane-semantics tests for benchmark_omni_mmmu.
+
+The lane-A / lane-B contract is non-negotiable (AC-10): Lane B forces
+``ignore_eos=True`` and ``max_tokens=256``; explicit overrides are
+rejected. The ``--stream`` × ``--enable-audio`` cross-product is also
+rejected (AC-1). These tests exercise the argparse → MMMUEvalConfig
+resolution to lock those guarantees.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+import pytest
+
+
+def _parser_namespace(**overrides) -> argparse.Namespace:
+    """Build an argparse.Namespace with the same fields the eval CLI parses."""
+    defaults = dict(
+        base_url=None,
+        host="localhost",
+        port=8000,
+        model="qwen3-omni",
+        output_dir=None,
+        max_samples=None,
+        max_tokens=None,
+        temperature=0.0,
+        warmup=0,
+        max_concurrency=1,
+        request_rate=float("inf"),
+        disable_tqdm=False,
+        enable_audio=False,
+        asr_device="cuda:0",
+        lang="en",
+        repo_id=None,
+        backend="omni",
+        stream=False,
+        seed=42,
+        ignore_eos=False,
+        lane="A",
+        reps=3,
+        repetition_index=0,
+        dataset_revisions=None,
+    )
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def test_lane_a_defaults() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="A"))
+    assert cfg.lane == "A"
+    assert cfg.ignore_eos is False
+    assert cfg.max_tokens == 2048
+
+
+def test_lane_b_locks_ignore_eos_true_and_max_tokens_256() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="B"))
+    assert cfg.lane == "B"
+    assert cfg.ignore_eos is True
+    assert cfg.max_tokens == 256
+
+
+def test_lane_b_with_explicit_max_tokens_256_is_accepted() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="B", max_tokens=256))
+    assert cfg.max_tokens == 256
+
+
+def test_lane_b_rejects_max_tokens_override() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    with pytest.raises(SystemExit, match="Lane B"):
+        _config_from_args(_parser_namespace(lane="B", max_tokens=2048))
+
+
+def test_lane_b_accepts_redundant_ignore_eos_true() -> None:
+    """--ignore-eos with --lane B is a no-op redundancy, not a contradiction."""
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="B", ignore_eos=True))
+    assert cfg.ignore_eos is True
+
+
+def test_stream_with_enable_audio_is_rejected() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    with pytest.raises(SystemExit, match="stream"):
+        _config_from_args(_parser_namespace(stream=True, enable_audio=True))
+
+
+def test_invalid_lane_is_rejected() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    with pytest.raises(SystemExit, match="lane"):
+        _config_from_args(_parser_namespace(lane="C"))
+
+
+def test_lane_a_allows_max_tokens_override() -> None:
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="A", max_tokens=512))
+    assert cfg.max_tokens == 512
+
+
+def test_lane_a_optional_ignore_eos() -> None:
+    """Lane A normally has ignore_eos=False, but the flag is allowed."""
+    from benchmarks.eval.benchmark_omni_mmmu import _config_from_args
+
+    cfg = _config_from_args(_parser_namespace(lane="A", ignore_eos=True))
+    assert cfg.ignore_eos is True
+
+
+def test_run_metadata_contains_all_ac9_fields() -> None:
+    """AC-9 validator: the emitted run-metadata block has every required key."""
+    from benchmarks.eval.benchmark_omni_mmmu import (
+        MMMUEvalConfig,
+        _build_run_metadata,
+    )
+    from benchmarks.scripts.run_metadata import REQUIRED_FIELDS, validate
+
+    cfg = MMMUEvalConfig(model="qwen3-omni", lane="A")
+    meta = _build_run_metadata(cfg)
+    missing = validate(meta)
+    assert missing == [], f"run_metadata missing fields: {missing}"
+    # Sanity check that REQUIRED_FIELDS is comprehensive (no shrinkage from
+    # the dataclass definition).
+    for field_name in REQUIRED_FIELDS:
+        assert field_name in meta
+
+
+def test_run_metadata_routes_container_by_backend() -> None:
+    """Container name + image fields follow the --backend choice."""
+    from benchmarks.eval.benchmark_omni_mmmu import (
+        MMMUEvalConfig,
+        _build_run_metadata,
+    )
+
+    omni_meta = _build_run_metadata(MMMUEvalConfig(model="m", backend="omni"))
+    assert omni_meta["container_name"] == "sglang-omni-hayden-benchmark"
+    assert omni_meta["container_image"] == "frankleeeee/sglang-omni:dev"
+
+    sglang_meta = _build_run_metadata(MMMUEvalConfig(model="m", backend="sglang"))
+    assert sglang_meta["container_name"] == "sglang-hayden-benchmark"
+    assert sglang_meta["container_image"] == "lmsysorg/sglang"

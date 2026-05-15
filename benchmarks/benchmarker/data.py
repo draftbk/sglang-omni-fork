@@ -25,8 +25,10 @@ class RequestResult:
     engine_time_s: float = 0.0
 
     # client_wall_time_s is perf_counter elapsed around session.post(). Used by
-    # send_fns that do not get server-side timing back from the engine.
-    client_wall_time_s: float = 0.0
+    # send_fns that do not get server-side timing back from the engine. None
+    # signals "not measured" so JSON consumers can tell apart a zero-time
+    # request (impossible) from a request that never set the field.
+    client_wall_time_s: float | None = None
 
     # timing_source declares which of the two fields above is authoritative for
     # tok_per_s and aggregate throughput computation for this request:

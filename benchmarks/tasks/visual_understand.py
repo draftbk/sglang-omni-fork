@@ -221,6 +221,40 @@ def parse_multi_choice_response(
     return candidates[max(range(len(candidates)), key=starts.__getitem__)], False
 
 
+def assert_sglang_payload_order_contract(payload: dict) -> None:
+    """Validate an SGLang-style payload obeys AC-2's image-then-text order.
+
+    Mirrors ``Qwen3OmniPreprocessor._build_multimodal_messages`` at
+    ``sglang_omni/models/qwen3_omni/components/preprocessor.py:158``,
+    which puts image placeholders BEFORE text. Used both as a runtime
+    sanity check and as a target for negative tests that hand-build a
+    text-first payload and assert this validator rejects it.
+
+    Raises ValueError on contract violation.
+    """
+    messages = payload.get("messages") or []
+    if not messages:
+        raise ValueError("payload has no messages")
+    content = messages[0].get("content")
+    if not isinstance(content, list):
+        raise ValueError("sglang payload's first message must use a part-list content")
+    if not content:
+        raise ValueError("content list is empty")
+    # All but the last part must be image_url; the last part must be text.
+    for i, part in enumerate(content[:-1]):
+        if part.get("type") != "image_url":
+            raise ValueError(
+                f"sglang payload content part {i} has type {part.get('type')!r}, "
+                f"expected 'image_url' (text must come AFTER all image parts)"
+            )
+    last = content[-1]
+    if last.get("type") != "text":
+        raise ValueError(
+            f"sglang payload's last content part has type {last.get('type')!r}, "
+            f"expected 'text' (image parts come BEFORE text)"
+        )
+
+
 def build_mmmu_payload(
     sample: MMMUSample,
     model_name: str,
@@ -371,6 +405,17 @@ async def consume_sse_stream(
 
         if saw_done:
             break
+
+    # AC-3 negative: any bytes remaining in the buffer when the stream ends
+    # mean the server emitted a partial frame without its terminating
+    # ``\n\n``. That violates the SSE framing contract and would otherwise
+    # cause the parser to silently drop a frame.
+    trailing = bytes(buffer).strip()
+    if trailing:
+        raise RuntimeError(
+            "SSE stream ended with an unterminated frame (no trailing CRLF/CRLF). "
+            f"Trailing buffer (first 200 bytes): {trailing[:200]!r}"
+        )
 
     if final_usage:
         prompt_tok = final_usage.get("prompt_tokens")
