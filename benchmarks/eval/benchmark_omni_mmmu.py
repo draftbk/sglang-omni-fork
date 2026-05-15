@@ -490,7 +490,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     if sampler_thread_holder["thread"] is not None:
         sampler_thread_holder["thread"].join(timeout=35)
 
-    per_sample = build_mmmu_result_records(samples, request_results)
+    per_sample = build_mmmu_result_records(samples, request_results, lane=config.lane)
     summary = compute_mmmu_metrics(per_sample)
     speed_metrics = compute_speed_metrics(
         request_results, wall_clock_s=runner.wall_clock_s

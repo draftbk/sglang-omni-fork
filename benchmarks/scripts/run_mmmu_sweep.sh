@@ -232,9 +232,10 @@ run_cell() {
         failure_count="$(python -c "import json; d=json.load(open('${cell_dir}/mmmu_results.json'));m=d.get('run_metadata',{});print(m.get('failure_count', 0))" 2>/dev/null || echo 0)"
     fi
 
-    printf '{"host":"%s","backend":"%s","lane":"%s","rep":%d,"status":"%s","cell_dir":"%s","container_name":"%s","container_image":"%s","container_image_digest":"%s","server_port":%d,"failure_count":%s}\n' \
+    printf '{"host":"%s","backend":"%s","lane":"%s","rep":%d,"status":"%s","cell_dir":"%s","container_name":"%s","container_image":"%s","container_image_digest":"%s","server_port":%d,"failure_count":%s,"failure_log_path":"%s"}\n' \
         "$host" "$backend" "$lane" "$rep_idx" "$status" "$cell_dir" \
         "$container_name" "$container_image" "$container_digest" "$port" "$failure_count" \
+        "$stderr_log" \
         >> "$STATUS_LOG"
 
     if [[ "$status" == "failed" ]]; then

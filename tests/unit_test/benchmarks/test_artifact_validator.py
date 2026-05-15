@@ -117,7 +117,16 @@ def _write_complete_cell(
 def _write_status(
     status_log: Path, rows: list[dict]
 ) -> None:
-    status_log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    # The validator requires every status row to carry a failure_log_path
+    # key (the path to its stderr capture). Inject a default so each test
+    # case doesn't have to repeat the field; tests that exercise the
+    # missing/empty failure_log_path contract override it explicitly.
+    normalized = []
+    for row in rows:
+        if "failure_log_path" not in row:
+            row = {**row, "failure_log_path": str(Path(row.get("cell_dir", ".")) / "stderr.log")}
+        normalized.append(row)
+    status_log.write_text("\n".join(json.dumps(r) for r in normalized) + "\n")
 
 
 def test_validator_passes_on_complete_bundle(tmp_path) -> None:
@@ -326,6 +335,143 @@ def test_validator_fails_when_launch_command_missing_mem_fraction(tmp_path) -> N
     rc, out = _run_validator(out_root, status)
     assert rc == 1
     assert "mem-fraction-static" in out
+
+
+def test_validator_fails_when_failed_row_has_empty_failure_log_path(tmp_path) -> None:
+    """A failed status row with empty `failure_log_path` is rejected — the
+    plan requires failed reps to surface their failure log path so
+    silently-dropped failures get caught at the contract layer.
+    """
+    out_root = tmp_path / "sweep"
+    cell = out_root / "lane_A" / "omni" / "rep_0"
+    _write_complete_cell(cell, digest="sha256:abc")
+    status = tmp_path / "sweep-status.jsonl"
+    _write_status(
+        status,
+        [
+            {
+                "host": "ion8-omni",
+                "backend": "omni",
+                "lane": "A",
+                "rep": 0,
+                "status": "failed",
+                "cell_dir": str(cell),
+                "container_image_digest": "sha256:abc",
+                "failure_count": 0,
+                "failure_log_path": "",  # explicit empty
+            }
+        ],
+    )
+    rc, out = _run_validator(out_root, status)
+    assert rc == 1
+    assert "failure_log_path" in out
+
+
+def test_validator_fails_when_failure_count_disagrees_between_row_and_metadata(tmp_path) -> None:
+    """Status row failure_count != run_metadata failure_count → fail.
+
+    This pattern indicates silently-retried failures that overwrote the
+    failure evidence in run_metadata but left a stale count in the
+    status row, or vice versa. The plan requires the two to agree.
+    """
+    out_root = tmp_path / "sweep"
+    cell = out_root / "lane_A" / "omni" / "rep_0"
+    _write_complete_cell(cell, digest="sha256:abc")
+    status = tmp_path / "sweep-status.jsonl"
+    _write_status(
+        status,
+        [
+            {
+                "host": "ion8-omni",
+                "backend": "omni",
+                "lane": "A",
+                "rep": 0,
+                "status": "success",
+                "cell_dir": str(cell),
+                "container_image_digest": "sha256:abc",
+                "container_name": "sglang-omni-hayden-benchmark",
+                "failure_count": 3,  # disagrees with metadata (which is 0)
+            }
+        ],
+    )
+    rc, out = _run_validator(out_root, status)
+    assert rc == 1
+    assert "failure_count" in out
+
+
+def test_validator_fails_when_metadata_failure_count_disagrees_with_per_sample(tmp_path) -> None:
+    """run_metadata.failure_count != count(per_sample where is_success=False) → fail.
+
+    Catches the silently-retried-failure pattern at a different layer:
+    the metadata claims k failures, but the persisted per-sample records
+    show a different number not-successful.
+    """
+    out_root = tmp_path / "sweep"
+    cell = out_root / "lane_A" / "omni" / "rep_0"
+    _write_complete_cell(cell, digest="sha256:abc")
+    # Inject inconsistent per_sample: 2 failed, but metadata.failure_count is 0.
+    result_path = cell / "mmmu_results.json"
+    data = json.loads(result_path.read_text())
+    data["per_sample"] = [
+        {"sample_id": "s0", "lane": "A", "is_success": False},
+        {"sample_id": "s1", "lane": "A", "is_success": False},
+        {"sample_id": "s2", "lane": "A", "is_success": True},
+    ]
+    result_path.write_text(json.dumps(data))
+    status = tmp_path / "sweep-status.jsonl"
+    _write_status(
+        status,
+        [
+            {
+                "host": "ion8-omni",
+                "backend": "omni",
+                "lane": "A",
+                "rep": 0,
+                "status": "success",
+                "cell_dir": str(cell),
+                "container_image_digest": "sha256:abc",
+                "container_name": "sglang-omni-hayden-benchmark",
+                "failure_count": 0,
+            }
+        ],
+    )
+    rc, out = _run_validator(out_root, status)
+    assert rc == 1
+    assert "per_sample" in out
+
+
+def test_validator_fails_on_duplicate_dispatch_tuple(tmp_path) -> None:
+    """Two status rows sharing (host, backend, lane, rep) → fail.
+
+    Silently-retried reps that overwrote prior status rows would produce
+    this shape. The validator must catch it.
+    """
+    out_root = tmp_path / "sweep"
+    cell_a = out_root / "lane_A" / "omni" / "rep_0"
+    cell_b = out_root / "lane_A" / "omni" / "rep_0_retry"
+    _write_complete_cell(cell_a, digest="sha256:abc")
+    _write_complete_cell(cell_b, digest="sha256:abc")
+    status = tmp_path / "sweep-status.jsonl"
+    base = {
+        "host": "ion8-omni",
+        "backend": "omni",
+        "lane": "A",
+        "rep": 0,
+        "status": "success",
+        "container_image_digest": "sha256:abc",
+        "container_name": "sglang-omni-hayden-benchmark",
+        "failure_count": 0,
+    }
+    _write_status(
+        status,
+        [
+            {**base, "cell_dir": str(cell_a)},
+            {**base, "cell_dir": str(cell_b)},  # duplicate tuple
+        ],
+    )
+    rc, out = _run_validator(out_root, status)
+    assert rc == 1
+    assert "duplicate" in out
 
 
 def test_validator_fails_on_orphan_cell_with_no_status_row(tmp_path) -> None:

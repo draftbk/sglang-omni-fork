@@ -138,6 +138,21 @@ def _validate_status_row(row: dict) -> list[str]:
         if not (cell_dir / fname).exists():
             issues.append(f"{row_label}: missing {fname} in {cell_dir}")
 
+    # Failure-log surfacing: every status row must declare a failure_log_path
+    # so a downstream reporter can point at the stderr capture; failed-status
+    # rows additionally require the value to be non-empty so silently-dropped
+    # failures get caught at the contract layer.
+    if "failure_log_path" not in row:
+        issues.append(
+            f"{row_label}: status row is missing 'failure_log_path' key; the "
+            f"plan requires every status row to surface its failure log path"
+        )
+    elif row.get("status") == "failed" and not (row.get("failure_log_path") or "").strip():
+        issues.append(
+            f"{row_label}: failed row has empty failure_log_path; the plan "
+            f"requires failed reps to surface their failure log path"
+        )
+
     result_path = cell_dir / "mmmu_results.json"
     if not result_path.exists():
         return issues  # already reported above
@@ -181,6 +196,32 @@ def _validate_status_row(row: dict) -> list[str]:
                 f"run_metadata digest {meta_digest!r}"
             )
 
+    # Failed-rep consistency: the plan requires `failure_count` to agree
+    # between the status row, the run_metadata block, and the count of
+    # per-sample records flagged as not-successful. Disagreement implies
+    # either silently-retried reps that overwrote failure evidence, or a
+    # reporter that miscounted; both are unsafe for downstream reporting.
+    if row.get("status") == "success":
+        row_failures = row.get("failure_count")
+        meta_failures = meta.get("failure_count")
+        if row_failures is not None and meta_failures is not None and row_failures != meta_failures:
+            issues.append(
+                f"{row_label}: status row failure_count={row_failures} != "
+                f"run_metadata failure_count={meta_failures}; silently-retried "
+                f"failures would produce this kind of disagreement"
+            )
+        per_sample = data.get("per_sample")
+        if isinstance(per_sample, list) and per_sample:
+            sample_failures = sum(
+                1 for rec in per_sample if not rec.get("is_success", False)
+            )
+            if meta_failures is not None and meta_failures != sample_failures:
+                issues.append(
+                    f"{row_label}: run_metadata failure_count={meta_failures} != "
+                    f"per_sample non-success count={sample_failures}; the "
+                    f"failed-rep accounting contract is broken"
+                )
+
     # Launch-evidence enforcement: open the cell's retained preflight.json
     # and require launch_command + the contracted policy flags for the
     # container that actually served this cell.
@@ -205,6 +246,37 @@ def _validate_status_row(row: dict) -> list[str]:
                         f"launch_command evidence"
                     )
 
+    return issues
+
+
+def _find_duplicate_rep_tuples(status_rows: list[dict]) -> list[str]:
+    """Reject duplicate ``(host, backend, lane, rep)`` rows.
+
+    Two status rows that share the same dispatch tuple indicate either a
+    silently-retried rep that overwrote its predecessor's evidence or a
+    bookkeeping bug that double-counted a single rep. Either way, the
+    bundle is unsafe for downstream reporting.
+    """
+    seen: dict[tuple, int] = {}
+    issues: list[str] = []
+    for idx, row in enumerate(status_rows):
+        key = (
+            row.get("host"),
+            row.get("backend"),
+            row.get("lane"),
+            row.get("rep"),
+        )
+        if any(k is None for k in key):
+            continue  # malformed rows are already flagged by row validation
+        if key in seen:
+            issues.append(
+                f"duplicate status row dispatch tuple "
+                f"host={key[0]!r}/backend={key[1]!r}/lane={key[2]!r}/rep={key[3]!r}: "
+                f"first at row index {seen[key]}, again at row index {idx}; "
+                f"silently-retried reps must NOT overwrite prior status rows"
+            )
+        else:
+            seen[key] = idx
     return issues
 
 
@@ -244,6 +316,7 @@ def main() -> int:
     all_issues: list[str] = []
     for row in status_rows:
         all_issues.extend(_validate_status_row(row))
+    all_issues.extend(_find_duplicate_rep_tuples(status_rows))
     all_issues.extend(_find_orphan_cells(out_root, status_rows))
 
     if all_issues:

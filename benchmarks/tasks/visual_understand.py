@@ -45,6 +45,7 @@ class MMMURecord(TypedDict):
     is_success: bool
     is_mc_fallback: bool
     error: str
+    lane: str
 
 
 def _check_is_number(s: str) -> bool:
@@ -560,8 +561,14 @@ def make_mmmu_send_fn(
 def build_mmmu_result_records(
     samples: list[MMMUSample],
     results: list[RequestResult],
+    lane: str = "A",
 ) -> list[MMMURecord]:
-    """Parse responses into persisted per-sample records."""
+    """Parse responses into persisted per-sample records.
+
+    ``lane`` is stamped into each record so a downstream report generator can
+    reject mixed Lane A / Lane B inputs at the record layer without depending
+    only on the file-level ``run_metadata.lane`` field.
+    """
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
@@ -586,6 +593,7 @@ def build_mmmu_result_records(
             "is_success": False,
             "is_mc_fallback": False,
             "error": result.error,
+            "lane": lane,
         }
 
         if result.is_success:

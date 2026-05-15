@@ -187,7 +187,22 @@ def write_results(out_dir: str, backend: str, lane: str, rep_idx: int, host: str
             "repetition_index": rep_idx,
             "failure_count": 0,
         },
-        "per_sample": [],
+        # Two synthetic successful per-sample records so the validator's
+        # failure-accounting cross-check (failure_count == count(is_success
+        # is false)) is exercised end-to-end against a non-empty list, not
+        # just skipped on the empty path.
+        "per_sample": [
+            {
+                "sample_id": f"dryrun-{lane}-{backend}-{rep_idx}-0",
+                "lane": lane,
+                "is_success": True,
+            },
+            {
+                "sample_id": f"dryrun-{lane}-{backend}-{rep_idx}-1",
+                "lane": lane,
+                "is_success": True,
+            },
+        ],
     }
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "mmmu_results.json"), "w") as f:
