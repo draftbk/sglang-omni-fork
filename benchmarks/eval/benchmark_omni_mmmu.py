@@ -355,9 +355,11 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     )
 
     # Schedule a steady-state GPU memory sample for warmup_complete + 30s
-    # (AC-9). The background thread fires once after the delay; the
-    # captured value is read after runner.run returns.
+    # (AC-9). The sampler thread is launched from BenchmarkRunner's
+    # post_warmup_hook so its 30s sleep is anchored at warmup completion,
+    # not at run start (which would include the warmup wall time).
     steady_state_gpu_holder: dict[str, list[float]] = {"value": []}
+    sampler_thread_holder: dict[str, threading.Thread | None] = {"thread": None}
 
     def _sample_gpu_after_warmup() -> None:
         time.sleep(30)
@@ -365,14 +367,19 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
 
         steady_state_gpu_holder["value"] = sample_gpu_memory_used_gb()
 
-    sampler_thread = threading.Thread(target=_sample_gpu_after_warmup, daemon=True)
-    sampler_thread.start()
+    def _start_sampler_post_warmup() -> None:
+        thread = threading.Thread(target=_sample_gpu_after_warmup, daemon=True)
+        thread.start()
+        sampler_thread_holder["thread"] = thread
 
-    request_results = await runner.run(samples, send_fn)
+    request_results = await runner.run(
+        samples, send_fn, post_warmup_hook=_start_sampler_post_warmup
+    )
     # Make sure the post-warmup sample has had a chance to run before we
     # build the metadata block. join() returns immediately if the thread
     # already finished (typical case: the sweep itself runs longer than 30s).
-    sampler_thread.join(timeout=35)
+    if sampler_thread_holder["thread"] is not None:
+        sampler_thread_holder["thread"].join(timeout=35)
 
     per_sample = build_mmmu_result_records(samples, request_results)
     summary = compute_mmmu_metrics(per_sample)

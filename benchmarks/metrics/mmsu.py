@@ -99,7 +99,17 @@ def print_mmsu_summary(
         if speed_metrics.get("rtf_mean") is not None:
             print(f"  RTF mean:         {speed_metrics.get('rtf_mean', 0):.4f}")
         print(f"  Throughput:       {speed_metrics.get('throughput_qps', 0):.2f} req/s")
-        print(f"  Tok/s agg:        {speed_metrics.get('tok_per_s_agg', 0):.2f}")
+        # MMSU runs through the client-wall path, so the truthful aggregate
+        # key is tok_per_s_clientwall_agg. Fall back to the engine variant
+        # (in case a TTS-style run is fed through here) and finally the
+        # legacy alias for genuinely-legacy summaries.
+        tok_agg = (
+            speed_metrics.get("tok_per_s_clientwall_agg")
+            or speed_metrics.get("tok_per_s_engine_agg")
+            or speed_metrics.get("tok_per_s_agg")
+            or 0
+        )
+        print(f"  Tok/s agg:        {tok_agg:.2f}")
         audio_returned = speed_metrics.get("audio_returned")
         audio_expected = speed_metrics.get("audio_expected")
         if audio_expected:

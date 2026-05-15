@@ -121,12 +121,16 @@ def resolve_hf_dataset_revision(repo_id: str) -> str | None:
 # ----------------------------------------------------------- container checks
 
 
-def docker_inspect_image(container_name: str) -> str | None:
-    if shutil.which("docker") is None:
+def _docker_inspect(
+    container_name: str, fmt: str, host: str | None = None
+) -> str | None:
+    """Run `docker inspect <name> --format <fmt>` locally or over SSH."""
+    prefix = _shell_prefix(host)
+    if not prefix and shutil.which("docker") is None:
         return None
     try:
         out = subprocess.check_output(
-            ["docker", "inspect", container_name, "--format", "{{index .Image}}"],
+            prefix + ["docker", "inspect", container_name, "--format", fmt],
             stderr=subprocess.DEVNULL,
             text=True,
         ).strip()
@@ -135,23 +139,24 @@ def docker_inspect_image(container_name: str) -> str | None:
         return None
 
 
-def docker_inspect_repo_tag(container_name: str) -> str | None:
-    if shutil.which("docker") is None:
-        return None
-    try:
-        out = subprocess.check_output(
-            ["docker", "inspect", container_name, "--format", "{{.Config.Image}}"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        return out or None
-    except subprocess.CalledProcessError:
-        return None
+def docker_inspect_image(container_name: str, host: str | None = None) -> str | None:
+    return _docker_inspect(container_name, "{{index .Image}}", host)
 
 
-def check_container(name: str, expected_image: str, report: PreflightReport) -> None:
-    digest = docker_inspect_image(name)
-    image_ref = docker_inspect_repo_tag(name)
+def docker_inspect_repo_tag(
+    container_name: str, host: str | None = None
+) -> str | None:
+    return _docker_inspect(container_name, "{{.Config.Image}}", host)
+
+
+def check_container(
+    name: str,
+    expected_image: str,
+    report: PreflightReport,
+    host: str | None = None,
+) -> None:
+    digest = docker_inspect_image(name, host=host)
+    image_ref = docker_inspect_repo_tag(name, host=host)
     info: dict[str, Any] = {
         "container_image_digest": digest,
         "container_image": image_ref,
@@ -306,6 +311,7 @@ def launch_named_container(
     server_cmd: list[str],
     log_path: str,
     host: str | None = None,
+    record: dict | None = None,
 ) -> bool:
     """Launch one benchmark container and tee its launcher log to disk.
 
@@ -346,6 +352,11 @@ def launch_named_container(
         image,
         *server_cmd,
     ]
+    # Record the exact command so AC-9's prefix_cache_disabled / mem_fraction
+    # values can be cross-checked against the actual launch flags later.
+    if record is not None:
+        record["launch_command"] = run_cmd
+        record["snapshot_path"] = snapshot_path
     try:
         subprocess.check_call(run_cmd, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError:
@@ -368,17 +379,48 @@ def launch_named_container(
     return True
 
 
-def wait_for_v1_models(base_url: str, timeout_s: int = 600) -> bool:
-    """Poll /v1/models until 200 or timeout."""
+def wait_for_v1_models(
+    base_url: str, timeout_s: int = 600, host: str | None = None
+) -> bool:
+    """Poll /v1/models until 200 or timeout.
+
+    When ``host`` is set to a remote machine, the probe runs over SSH via
+    ``ssh <host> curl ...`` so the readiness check actually talks to the
+    same machine that launched the container, not the orchestrator's
+    localhost.
+    """
     url = base_url.rstrip("/") + "/v1/models"
     deadline = time.monotonic() + timeout_s
+    prefix = _shell_prefix(host)
     while time.monotonic() < deadline:
-        try:
-            with request.urlopen(url, timeout=5) as resp:
-                if resp.status == 200:
+        if prefix:
+            try:
+                out = subprocess.check_output(
+                    prefix
+                    + [
+                        "curl",
+                        "-sS",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        url,
+                    ],
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=10,
+                ).strip()
+                if out == "200":
                     return True
-        except (error.URLError, error.HTTPError):
-            pass
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                with request.urlopen(url, timeout=5) as resp:
+                    if resp.status == 200:
+                        return True
+            except (error.URLError, error.HTTPError):
+                pass
         time.sleep(5)
     return False
 
@@ -507,6 +549,22 @@ def parse_args() -> argparse.Namespace:
         default=600,
         help="Max seconds to wait for each server's /v1/models to respond "
         "after --launch (default: 600).",
+    )
+    p.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.9,
+        help="GPU memory fraction reserved for static weights on each "
+        "container. Recorded in preflight JSON and passed as a server "
+        "flag to both containers (default: 0.9).",
+    )
+    p.add_argument(
+        "--disable-prefix-cache",
+        action="store_true",
+        default=True,
+        help="Pass --disable-radix-cache to both server launch commands "
+        "so AC-9's prefix_cache_disabled is enforced by launch flag, not "
+        "just declared by metadata (default: True).",
     )
     p.add_argument(
         "--port-omni",
@@ -655,37 +713,54 @@ def main() -> int:
         else:
             log_omni = args.launcher_log_omni or "/tmp/sglang-omni-benchmark.log"
             log_sglang = args.launcher_log_sglang or "/tmp/sglang-benchmark.log"
+            mem_frac = f"{args.mem_fraction_static:.3f}"
+
+            omni_server_cmd = [
+                "sgl-omni",
+                "serve",
+                "--model-path",
+                "/snapshot",
+                "--text-only",
+                "--port",
+                str(args.port_omni),
+                "--mem-fraction-static",
+                mem_frac,
+            ]
+            if args.disable_prefix_cache:
+                omni_server_cmd.append("--disable-radix-cache")
+            omni_record = report.containers.setdefault("sglang-omni-hayden-benchmark", {})
             ok_omni = launch_named_container(
                 name="sglang-omni-hayden-benchmark",
                 image="frankleeeee/sglang-omni:dev",
                 snapshot_path=snapshot_omni,
-                server_cmd=[
-                    "sgl-omni",
-                    "serve",
-                    "--model-path",
-                    "/snapshot",
-                    "--text-only",
-                    "--port",
-                    str(args.port_omni),
-                ],
+                server_cmd=omni_server_cmd,
                 log_path=log_omni,
                 host=args.host,
+                record=omni_record,
             )
+
+            sglang_server_cmd = [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--model-path",
+                "/snapshot",
+                "--port",
+                str(args.port_sglang),
+                "--mem-fraction-static",
+                mem_frac,
+            ]
+            if args.disable_prefix_cache:
+                sglang_server_cmd.append("--disable-radix-cache")
+            sglang_record = report.containers.setdefault("sglang-hayden-benchmark", {})
             ok_sglang = launch_named_container(
                 name="sglang-hayden-benchmark",
                 image="lmsysorg/sglang",
                 snapshot_path=snapshot_sglang,
-                server_cmd=[
-                    "python",
-                    "-m",
-                    "sglang.launch_server",
-                    "--model-path",
-                    "/snapshot",
-                    "--port",
-                    str(args.port_sglang),
-                ],
+                server_cmd=sglang_server_cmd,
                 log_path=log_sglang,
                 host=args.host,
+                record=sglang_record,
             )
             if not ok_omni:
                 report.fail("Failed to launch sglang-omni-hayden-benchmark.")
@@ -693,14 +768,14 @@ def main() -> int:
                 report.fail("Failed to launch sglang-hayden-benchmark.")
             # Wait for both servers to report healthy via /v1/models.
             if ok_omni and not wait_for_v1_models(
-                args.base_url_omni, args.ready_timeout_s
+                args.base_url_omni, args.ready_timeout_s, host=args.host
             ):
                 report.fail(
                     f"sglang-omni-hayden-benchmark did not report ready on "
                     f"{args.base_url_omni}/v1/models within {args.ready_timeout_s}s."
                 )
             if ok_sglang and not wait_for_v1_models(
-                args.base_url_sglang, args.ready_timeout_s
+                args.base_url_sglang, args.ready_timeout_s, host=args.host
             ):
                 report.fail(
                     f"sglang-hayden-benchmark did not report ready on "
@@ -712,10 +787,12 @@ def main() -> int:
             args.launcher_log_omni = log_omni
             args.launcher_log_sglang = log_sglang
 
-    # 2. Container checks (skippable for dev-box dry-runs).
+    # 2. Container checks (skippable for dev-box dry-runs). Run on the
+    # same host that launched the containers when --host is set so the
+    # digest captured in the report matches the running container.
     if not args.skip_container_check:
         for name, expected_image in EXPECTED_CONTAINERS.items():
-            check_container(name, expected_image, report)
+            check_container(name, expected_image, report, host=args.host)
 
     # 3. /v1/models probes.
     if not args.skip_container_check:

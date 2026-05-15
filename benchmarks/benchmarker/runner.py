@@ -52,7 +52,21 @@ class BenchmarkRunner:
         self.config = config
         self.wall_clock_s: float = 0.0
 
-    async def run(self, samples: list, send_fn: SendFn) -> list[RequestResult]:
+    async def run(
+        self,
+        samples: list,
+        send_fn: SendFn,
+        *,
+        post_warmup_hook: Callable[[], None] | None = None,
+    ) -> list[RequestResult]:
+        """Run the benchmark dispatch with an optional post-warmup callback.
+
+        ``post_warmup_hook`` (when provided) is invoked exactly once after
+        the warmup loop completes and before measured dispatch begins. The
+        AC-9 steady-state GPU sampler hooks in here so its 30s sleep is
+        anchored at ``warmup_complete``, not ``run_start`` (which would
+        include warmup wall time).
+        """
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
         session_kwargs: dict = {"timeout": timeout}
         if self.config.read_bufsize is not None:
@@ -60,6 +74,8 @@ class BenchmarkRunner:
         async with aiohttp.ClientSession(**session_kwargs) as session:
             if self.config.warmup > 0:
                 await self._warmup(session, samples, send_fn)
+            if post_warmup_hook is not None:
+                post_warmup_hook()
 
             logger.info(
                 "Benchmarking %d requests (max_concurrency=%s)...",

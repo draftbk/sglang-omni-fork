@@ -629,6 +629,78 @@ def test_engine_results_emit_only_engine_agg() -> None:
     assert "tok_per_s_clientwall_agg" not in summary
 
 
+def test_post_warmup_hook_fires_after_warmup_loop() -> None:
+    """AC-9 timing contract: BenchmarkRunner invokes post_warmup_hook
+    exactly once after warmup completes and before measured dispatch
+    starts. This is the anchor point the steady-state GPU sampler uses
+    so its 30s sleep covers `warmup_complete + 30s`, not `run_start + 30s`.
+    """
+    import asyncio as _asyncio
+
+    from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+
+    events: list[tuple[str, int]] = []
+    call_index = {"n": 0}
+
+    def hook() -> None:
+        events.append(("hook", call_index["n"]))
+
+    async def fake_send(_session, sample):
+        idx = call_index["n"]
+        call_index["n"] += 1
+        events.append(("send", idx))
+        return RequestResult(request_id=str(idx), is_success=True, latency_s=0.001)
+
+    samples = [object() for _ in range(3)]
+    runner = BenchmarkRunner(
+        RunConfig(max_concurrency=1, warmup=2, disable_tqdm=True, timeout_s=10)
+    )
+    _asyncio.new_event_loop().run_until_complete(
+        runner.run(samples, fake_send, post_warmup_hook=hook)
+    )
+
+    # Sequence must be: 2 warmup sends, then the hook, then 3 measured sends.
+    kinds = [e[0] for e in events]
+    assert kinds.count("hook") == 1, f"hook should fire exactly once, got {kinds}"
+    hook_idx = kinds.index("hook")
+    sends_before_hook = kinds[:hook_idx].count("send")
+    sends_after_hook = kinds[hook_idx + 1 :].count("send")
+    assert sends_before_hook == 2, (
+        f"hook fired after only {sends_before_hook} warmup sends; "
+        f"expected 2 (warmup count). Sequence: {kinds}"
+    )
+    assert sends_after_hook == 3, (
+        f"only {sends_after_hook} measured sends after hook; expected 3. "
+        f"Sequence: {kinds}"
+    )
+
+
+def test_post_warmup_hook_skipped_when_warmup_zero() -> None:
+    """When warmup=0 the hook still fires once, before any measured send."""
+    import asyncio as _asyncio
+
+    from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+
+    events: list[str] = []
+
+    def hook() -> None:
+        events.append("hook")
+
+    async def fake_send(_session, sample):
+        events.append("send")
+        return RequestResult(request_id="1", is_success=True, latency_s=0.001)
+
+    runner = BenchmarkRunner(
+        RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True, timeout_s=10)
+    )
+    _asyncio.new_event_loop().run_until_complete(
+        runner.run([object()], fake_send, post_warmup_hook=hook)
+    )
+    # When warmup=0 the runner skips the warmup loop entirely; hook still
+    # fires after the (empty) warmup phase and before dispatch.
+    assert events == ["hook", "send"]
+
+
 def test_legacy_results_still_emit_tok_per_s_agg() -> None:
     """Legacy results (no timing_source set) keep emitting the legacy
     aggregate key so unmigrated callers stay unbroken."""
