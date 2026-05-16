@@ -89,12 +89,16 @@ class SGLModelRunner(ModelRunner):
             Qwen3OmniThinkerForCausalLM,
         )
         from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+        from sglang_omni.models.voxtral_tts_v1.sglang_model import (
+            VoxtralSGLangTextModel,
+        )
 
         ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
         ModelRegistry.models["Qwen3OmniThinkerForCausalLM"] = (
             Qwen3OmniThinkerForCausalLM
         )
+        ModelRegistry.models["VoxtralSGLangTextModel"] = VoxtralSGLangTextModel
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
