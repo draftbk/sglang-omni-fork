@@ -133,7 +133,7 @@ def detect_hardware() -> str:
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            text=True, timeout=5,
+            text=True, timeout=30,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return "unknown"
@@ -397,6 +397,49 @@ def cmd_precheck(args: argparse.Namespace) -> int:
                 f"`huggingface-cli download --repo-type dataset {ds}`"
             )
 
+    # Auxiliary scoring resources (ASR models, normalizer pkgs, repo-root symlinks).
+    # These are orthogonal to the main model+dataset and easy to forget —
+    # without them the run usually succeeds at generation but produces zero
+    # evaluated samples (silent quality fail) or skips whole rows.
+    for aux in cfg.get("auxiliary_models", []) or []:
+        kind = aux.get("kind", "hf")
+        aid = aux.get("id", "?")
+        if kind == "hf":
+            ok = _hf_cached(py, aid, "model")
+        elif kind == "modelscope":
+            ok = _modelscope_cached(aid)
+        else:
+            ok = False
+        used = aux.get("used_for", "")
+        suffix = f" — {used}" if used else ""
+        print(f"  {'✓' if ok else '✗'} aux model ({kind}): {aid}{suffix}")
+        if not ok:
+            hint = aux.get("install_cmd") or f"<install {aid}>"
+            errs.append(f"aux model not cached: {aid} — `{hint}`")
+
+    for pkg in cfg.get("python_packages", []) or []:
+        meta = pkg if isinstance(pkg, dict) else {"name": pkg}
+        name = meta.get("name", "?")
+        ok = _pkg_importable(py, name)
+        used = meta.get("used_for", "")
+        suffix = f" — {used}" if used else ""
+        print(f"  {'✓' if ok else '✗'} python pkg: {name}{suffix}")
+        if not ok:
+            hint = meta.get("install_cmd") or f"uv pip install {name}"
+            errs.append(f"python pkg missing: {name} — `{hint}`")
+
+    _root = repo_root()
+    for link in cfg.get("path_links", []) or []:
+        target = link.get("target", "")
+        tp = _root / target
+        ok = tp.exists()
+        used = link.get("used_for", "")
+        suffix = f" — {used}" if used else ""
+        print(f"  {'✓' if ok else '✗'} path link: {target}{suffix}")
+        if not ok:
+            hint = link.get("install_cmd") or f"create {tp}"
+            errs.append(f"path link missing: {tp} — `{hint}`")
+
     hw = detect_hardware()
     print(f"  hardware: {hw}")
 
@@ -439,6 +482,65 @@ def _hf_cached(py: str, repo_id: str, kind: str) -> bool:
     prefix = "models--" if kind == "model" else "datasets--"
     slug = prefix + repo_id.replace("/", "--")
     return (cache / "hub" / slug).exists()
+
+
+def _modelscope_cached(repo_id: str) -> bool:
+    """Check modelscope's default cache: ~/.cache/modelscope/hub/models/<id>."""
+    base = Path(os.environ.get(
+        "MODELSCOPE_CACHE",
+        os.path.expanduser("~/.cache/modelscope/hub/models"),
+    ))
+    return (base / repo_id).exists()
+
+
+def _pkg_importable(py: str, name: str) -> bool:
+    """Try `import <name>` under the configured venv python."""
+    proc = subprocess.run(
+        [py, "-c", f"import {name}"],
+        capture_output=True, text=True, timeout=20,
+    )
+    return proc.returncode == 0
+
+
+_FAIL_EXCERPT_KEYWORDS = re.compile(
+    r"Error|FAILED|Failed|OutOfMemory|ModuleNotFound|FileNotFound"
+    r"|ValueError|RuntimeError|TypeError|Killed",
+    re.IGNORECASE,
+)
+
+
+def _extract_fail_excerpt(*log_paths) -> str | None:
+    """Pull a useful 1-paragraph hint out of failure logs.
+
+    Looks (in order: first arg first) for the last Python Traceback (up to
+    ~2 KB), else the last line in the tail matching common error keywords.
+    Returns None if nothing relevant found.
+    """
+    for p in [Path(x) for x in log_paths]:
+        if not p.exists():
+            continue
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        # Last full Traceback block.
+        tb_starts = [
+            m.start() for m in
+            re.finditer(r"^Traceback \(most recent call last\):",
+                        text, re.MULTILINE)
+        ]
+        if tb_starts:
+            tb = text[tb_starts[-1]:]
+            stop = re.search(r"\n\d{4}-\d{2}-\d{2}|\n\[(INFO|WARN)", tb)
+            if stop:
+                tb = tb[:stop.start()]
+            return tb[:2000].rstrip()
+        # Otherwise scan the tail for an error-shaped line.
+        for ln in reversed(text.splitlines()[-50:]):
+            ln = ln.strip()
+            if ln and _FAIL_EXCERPT_KEYWORDS.search(ln):
+                return ln[:500]
+    return None
 
 
 def _emit_precheck_summary(errs, warns, out_dir, cfg, py, src, **extra) -> int:
@@ -496,9 +598,10 @@ class ServerHandle:
 
 
 def launch_server(cmd_template: str, *, port: int, model: str,
-                  gpus_csv: str, log_path: Path,
+                  gpus_csv: str, log_path: Path, repo_root: Path = Path("."),
                   env_extra: dict | None = None) -> ServerHandle:
-    cmd = cmd_template.format(port=port, model=model, gpus=gpus_csv)
+    cmd = cmd_template.format(port=port, model=model, gpus=gpus_csv,
+                              repo_root=str(repo_root))
     env = dict(os.environ)
     if env_extra:
         env.update(env_extra)
@@ -508,7 +611,7 @@ def launch_server(cmd_template: str, *, port: int, model: str,
     log_fh = open(log_path, "w")
     popen = subprocess.Popen(
         cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
-        env=env, start_new_session=True,
+        env=env, cwd=str(repo_root), start_new_session=True,
     )
     return ServerHandle(popen, port, log_path)
 
@@ -534,6 +637,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     py, _, _ = resolve_venv_python(args.venv_python, cfg)
     if not Path(py).exists():
         raise SystemExit(f"venv python missing: {py} — run precheck first")
+    venv_bin = str(Path(py).parent)
+    os.environ["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
     root = repo_root()
     out = (Path(args.output_dir) if args.output_dir
            else root / DEFAULT_RUN_ROOT_REL / ts_dir())
@@ -542,6 +647,29 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     rows = cfg.get("rows", [])
     selected = _select_rows(rows, args.benchmarks, args.exclude_ids)
+    if args.retry_failed_from:
+        prior_path = Path(args.retry_failed_from)
+        if prior_path.is_dir():
+            prior_path = prior_path / "run-state.json"
+        if not prior_path.exists():
+            raise SystemExit(f"--retry-failed-from: state file not found: {prior_path}")
+        prior = json.loads(prior_path.read_text())
+        prior_by_id = {r["id"]: r for r in prior.get("rows", [])}
+
+        def _is_done(rid: str) -> bool:
+            ps = prior_by_id.get(rid)
+            if not ps or ps.get("status") != "ok":
+                return False
+            edit = ps.get("edit") or {}
+            return (edit.get("status") == "ok"
+                    and edit.get("action") in ("replaced", "appended"))
+
+        before = len(selected)
+        selected = [r for r in selected if not _is_done(r["id"])]
+        skipped = before - len(selected)
+        print(f"retry-failed-from {prior_path}: "
+              f"skipping {skipped} row(s) already done")
+
     if not selected:
         raise SystemExit(
             "no rows selected — pass --benchmarks NAME,NAME or --benchmarks all. "
@@ -608,6 +736,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"\n  failed runs:")
         for r in runs_failed:
             print(f"    ✗ {r['id']}: {r['reason']}")
+            ex = r.get("fail_excerpt")
+            if ex:
+                for ln in ex.splitlines()[-3:]:
+                    print(f"      | {ln}")
     if edits_failed:
         print(f"\n  failed edits (run was ok but write didn't go through):")
         for r in edits_failed:
@@ -652,13 +784,20 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         return {"id": row_id, "status": "fail", "reason": reason, "rounds": []}
     chosen = free[:gpu_count]
     gpus_csv = ",".join(str(g) for g in chosen)
-    print(f"  gpus: {gpus_csv}")
+    # Pick an ASR GPU from the leftover free pool (highest index first, to
+    # leave low indices for subsequent server allocations). If none free,
+    # fall back to CPU — slower but won't OOM. Available to client cmd
+    # templates as `{asr_gpu}` and substitutes the literal device string.
+    remaining_free = [g for g in free if g not in set(chosen)]
+    asr_device = f"cuda:{remaining_free[-1]}" if remaining_free else "cpu"
+    print(f"  gpus: {gpus_csv}  asr: {asr_device}")
 
     rounds_state: list[dict] = []
     for k in range(1, rounds + 1):
         round_dir = row_dir / f"round_{k}"
         round_dir.mkdir(parents=True, exist_ok=True)
-        rstate = _run_one_round(row, py, root, round_dir, gpus_csv, smoke, cfg)
+        rstate = _run_one_round(row, py, root, round_dir, gpus_csv, smoke, cfg,
+                                asr_device=asr_device)
         rounds_state.append(rstate)
         if rstate["status"] != "ok":
             break
@@ -677,17 +816,24 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         (r["reason"] for r in reversed(rounds_state) if r["status"] != "ok"),
         "",
     )
+    last_excerpt = next(
+        (r.get("fail_excerpt") for r in reversed(rounds_state)
+         if r["status"] != "ok"),
+        None,
+    )
     return {
         "id": row_id,
         "status": overall,
         "reason": last_reason,
+        "fail_excerpt": last_excerpt,
         "gpus": gpus_csv,
         "rounds": rounds_state,
     }
 
 
 def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
-                   gpus_csv: str, smoke: int | None, cfg: dict) -> dict:
+                   gpus_csv: str, smoke: int | None, cfg: dict, *,
+                   asr_device: str = "cpu") -> dict:
     port = free_port()
     server_log = round_dir / "server.log"
     client_log = round_dir / "client.log"
@@ -701,6 +847,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
     handle = launch_server(
         server_cmd_tmpl,
         port=port, model=model_id, gpus_csv=gpus_csv, log_path=server_log,
+        repo_root=root,
     )
     try:
         health = row.get("server_health", "http://localhost:{port}/health").format(port=port)
@@ -712,6 +859,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
                 "reason": f"server boot: {msg}",
                 "round_dir": str(round_dir),
                 "server_log": str(server_log),
+                "fail_excerpt": _extract_fail_excerpt(server_log),
             }
         print(f"    server ready (<{timeout}s)")
 
@@ -720,6 +868,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
             client_tmpl = _override_max_samples(client_tmpl, smoke)
         client_cmd = client_tmpl.format(
             port=port, output_dir=str(out_dir), model=model_id,
+            asr_gpu=asr_device,
         )
         print(f"    client: {_truncate(client_cmd, 110)}")
         with open(client_log, "w") as flog:
@@ -735,6 +884,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
                 "round_dir": str(round_dir),
                 "client_log": str(client_log),
                 "server_log": str(server_log),
+                "fail_excerpt": _extract_fail_excerpt(client_log, server_log),
             }
 
         rj = out_dir / row["result_json"]
@@ -745,6 +895,34 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
                 "round_dir": str(round_dir),
                 "client_log": str(client_log),
                 "server_log": str(server_log),
+                "fail_excerpt": _extract_fail_excerpt(client_log, server_log),
+            }
+
+        # Sanity check the result.json BEFORE declaring the row ok. Some
+        # benchmark clients catch per-sample exceptions and write a valid
+        # JSON with `evaluated=0` (e.g. an entire transcribe phase skipped
+        # because a python dep was missing). Without this check the runner
+        # would happily write "0.00%" cells over real reference values.
+        try:
+            rj_data = json.loads(rj.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            return {
+                "status": "fail",
+                "reason": f"result.json unreadable: {exc}",
+                "round_dir": str(round_dir),
+                "client_log": str(client_log),
+                "server_log": str(server_log),
+                "fail_excerpt": _extract_fail_excerpt(client_log, server_log),
+            }
+        sanity_issues = _sanity_check_result(rj_data)
+        if sanity_issues:
+            return {
+                "status": "fail",
+                "reason": "sanity: " + "; ".join(sanity_issues),
+                "round_dir": str(round_dir),
+                "client_log": str(client_log),
+                "server_log": str(server_log),
+                "fail_excerpt": _extract_fail_excerpt(client_log, server_log),
             }
         return {
             "status": "ok",
@@ -756,6 +934,43 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
     finally:
         print(f"    stopping server", flush=True)
         handle.stop()
+
+
+def _sanity_check_result(rj: dict) -> list[str]:
+    """Catch upstream-skip bugs that yield a writable but garbage result.json.
+
+    Heuristics avoid false positives on legitimately-zero metrics (e.g.
+    WER ~ 0% is fine for high-quality TTS) — instead we verify that
+    ENOUGH samples were actually processed, using whichever processed/
+    total field pair the schema provides. Returns a list of human-readable
+    issues; empty list = OK.
+    """
+    if not isinstance(rj, dict):
+        return ["result.json top-level is not a dict"]
+    s = rj.get("summary")
+    if not isinstance(s, dict):
+        return ["result.json has no `summary` dict"]
+
+    issues: list[str] = []
+    total = s.get("total_samples")
+    if isinstance(total, int) and total > 0:
+        for processed_key in ("evaluated", "parseable_samples"):
+            n = s.get(processed_key)
+            if isinstance(n, int) and n < total * 0.5:
+                issues.append(
+                    f"{processed_key}={n}/{total} (>50% skipped — "
+                    f"likely upstream dep failure)"
+                )
+    completed = s.get("completed_requests")
+    failed = s.get("failed_requests")
+    if (isinstance(completed, int) and isinstance(failed, int)
+            and completed + failed > 0
+            and failed > completed * 0.5):
+        issues.append(
+            f"failed_requests={failed} > completed={completed} "
+            "(>50% server-side failures)"
+        )
+    return issues
 
 
 def _override_max_samples(client: str, n: int) -> str:
@@ -1129,6 +1344,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="comma-separated row-id substrings to skip "
                         "(e.g. 's2pro-' to drop S2-Pro rows when --benchmarks "
                         "would otherwise pick them up via shared short names)")
+    p.add_argument("--retry-failed-from", default=None,
+                   help="path to a prior run's state.json (or run-dir containing "
+                        "one); skip rows that succeeded in that run "
+                        "(status=ok AND edit.action in {replaced, appended}). "
+                        "Use after a previous run to re-execute just the failed "
+                        "rows without recomputing --exclude-ids by hand.")
     p.add_argument("--gpu-pool", default=None,
                    help="comma-separated GPU indices to restrict eligible "
                         "GPUs (e.g. '0,1' for a 2-GPU pool). Use to run "
