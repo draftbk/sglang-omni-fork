@@ -48,8 +48,8 @@ Accuracy (accuracy)
 
 | Model      | Config                | overall_accuracy | parseable_samples | unparseable_samples | Source                        |
 | ---------- | --------------------- | ---------------- | ----------------- | ------------------- | ----------------------------- |
-| Qwen3-Omni | modalities=text       | 70.96%           | 5000/5000         | 0                   | PR #393 [H200, V1-pipeline, full-set, c=8] |
-| Qwen3-Omni | modalities=text+audio | 71.06%           | 5000/5000         | 0                   | PR #393 [H200, V1-pipeline, full-set, c=8] |
+| Qwen3-Omni | modalities=text       | 70.96%           | 4999/5000         | 1                   | PR #411 [H200, V1-pipeline, full-set, c=8] |
+| Qwen3-Omni | modalities=text+audio | 70.70%           | 5000/5000         | 0                   | PR #411 [H200, V1-pipeline, full-set, c=8] |
 | Qwen3-Omni | modalities=text       | 71.10%           | 4999/5000         | 1                   | PR #351 [H100, full-set, c=8] |
 | Qwen3-Omni | modalities=text+audio | 71.14%           | 5000/5000         | 0                   | PR #351 [H100, full-set, c=8] |
 
@@ -66,8 +66,8 @@ Speed (speed)
 
 | Model      | Config                | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                          |
 | ---------- | --------------------- | -------------- | ------------- | -------------- | -------------- | ------------- | ----------------------------------------------- |
-| Qwen3-Omni | modalities=text       | 0.226          | 0.335         | 35.33          | 9.1            | 9.1           | PR #393 [H200, V1-pipeline, full-set, c=8]                   |
-| Qwen3-Omni | modalities=text+audio | 0.243          | 0.340         | 32.89          | 8.5            | 8.5           | PR #393 [H200, V1-pipeline, full-set, c=8, text-only server] |
+| Qwen3-Omni | modalities=text       | 0.209          | 0.290         | 38.31          | 10.2           | 9.9           | PR #411 [H200, V1-pipeline, full-set, c=8]             |
+| Qwen3-Omni | modalities=text+audio | 0.207          | 0.278         | 38.59          | 10.2           | 10.0          | PR #411 [H200, V1-pipeline, full-set, c=8, text-only server] |
 | Qwen3-Omni | modalities=text       | 0.512          | 0.864         | 15.598         | 4.5            | 4.0           | PR #351 [H100, full-set, c=8]                   |
 | Qwen3-Omni | modalities=text+audio | 0.515          | 0.884         | 15.521         | 4.4            | 4.0           | PR #351 [H100, full-set, c=8] (text-only server) |
 
