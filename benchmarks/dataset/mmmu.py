@@ -26,14 +26,8 @@ _DEFAULT_REVISIONS_PATH = Path(__file__).parent / "mmmu_revisions.json"
 
 
 class DatasetRevisionMissing(RuntimeError):
-    """Raised when a dataset repo is loaded without a pinned revision SHA.
-
-    The benchmark fails closed on missing revisions so MMMU comparisons stay
-    bit-reproducible. To resolve, run the preflight gate
-    (``benchmarks/scripts/preflight_mmmu_sweep.py --update-revisions``) which
-    queries HuggingFace for the current resolved SHA of each repo this
-    project consumes and writes them into
-    ``benchmarks/dataset/mmmu_revisions.json``.
+    """Dataset repo loaded without a pinned revision SHA. Add an entry to
+    ``benchmarks/dataset/mmmu_revisions.json`` (commit it) before re-running.
     """
 
 
@@ -51,9 +45,7 @@ def _require_revision(repo_id: str, revisions: dict[str, str]) -> str:
     if not sha:
         raise DatasetRevisionMissing(
             f"No revision pinned for HuggingFace dataset repo {repo_id!r}. "
-            f"Populate it via `benchmarks/scripts/preflight_mmmu_sweep.py "
-            f"--update-revisions` before running the sweep, then commit the "
-            f"updated benchmarks/dataset/mmmu_revisions.json."
+            f"Add an entry to benchmarks/dataset/mmmu_revisions.json and commit it."
         )
     return sha
 

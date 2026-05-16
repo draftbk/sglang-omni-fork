@@ -72,12 +72,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import sys
-import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,13 +120,6 @@ class MMMUEvalConfig:
     repo_id: str | None = None
     prompt_override: str | None = None
     timeout_s: int = 300
-    # Evidence-based metadata sources: preflight.json supplies model_revision
-    # + container digest; launcher.log supplies kv_cache_capacity_tokens; the
-    # two policy flags below are cross-checked against the retained launch_command.
-    preflight_json: str | None = None
-    launcher_log: str | None = None
-    mem_fraction_static: float | None = None
-    prefix_cache_disabled: bool = True
     # "omni" → top-level images field; "sglang" → OAI messages[].content with image_url.
     backend: str = "omni"
     # When True, consume SSE response and populate TTFT + inter-chunk metrics.
@@ -148,88 +138,6 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-def _load_preflight_merge(preflight_json: str | None) -> dict:
-    """Load preflight.json output (if any) for model_revision + digest merge."""
-    if not preflight_json:
-        return {}
-    try:
-        return json.loads(Path(preflight_json).read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-class LaunchPolicyMismatch(RuntimeError):
-    """Eval's declared policy disagrees with the preflight launch_command evidence."""
-
-
-def _derive_launch_policy_from_preflight(
-    preflight: dict, container_name: str, declared_mem_fraction: float | None,
-    declared_prefix_cache_disabled: bool,
-    *,
-    preflight_supplied: bool = False,
-) -> tuple[float | None, bool, bool]:
-    """Parse retained ``launch_command`` and return ``(mem_fraction, prefix_cache_disabled, claimed_unverified)``.
-
-    Raises ``LaunchPolicyMismatch`` when launch_command flags disagree with
-    declared values, or when ``preflight_supplied=True`` but launch_command
-    is missing (closes the evidence-dropped-silently failure mode).
-    """
-    containers = (preflight.get("containers") or {}) if preflight else {}
-    container_record = containers.get(container_name) or {}
-    launch_cmd = container_record.get("launch_command")
-    if not launch_cmd:
-        if preflight_supplied:
-            raise LaunchPolicyMismatch(
-                f"--preflight-json was provided but the retained preflight record "
-                f"for container {container_name!r} is missing `launch_command`. "
-                f"The eval cannot derive `prefix_cache_disabled` or "
-                f"`mem_fraction_static_configured` from evidence in this state. "
-                f"Re-run preflight with --launch so the launch command is "
-                f"captured, or omit --preflight-json for an unverified dev run."
-            )
-        # No evidence and no preflight supplied; the eval's declared values
-        # stand but are marked claimed-unverified.
-        return declared_mem_fraction, declared_prefix_cache_disabled, True
-
-    # Parse flags out of the recorded list. The launch command is a list of
-    # tokens that includes the docker run wrapper plus the server args; we
-    # just scan for the two policy flags we care about.
-    evidence_mem_fraction: float | None = None
-    evidence_prefix_cache_disabled = False
-    tokens = list(launch_cmd)
-    for i, tok in enumerate(tokens):
-        if tok == "--mem-fraction-static" and i + 1 < len(tokens):
-            try:
-                evidence_mem_fraction = float(tokens[i + 1])
-            except ValueError:
-                evidence_mem_fraction = None
-        if tok == "--disable-radix-cache":
-            evidence_prefix_cache_disabled = True
-
-    # Mismatch checks: fail fast so the retained artifact cannot claim
-    # a policy the launch command did not enforce.
-    if (
-        declared_mem_fraction is not None
-        and evidence_mem_fraction is not None
-        and abs(declared_mem_fraction - evidence_mem_fraction) > 1e-9
-    ):
-        raise LaunchPolicyMismatch(
-            f"Eval CLI declares --mem-fraction-static={declared_mem_fraction} "
-            f"but preflight launch_command for {container_name} carries "
-            f"--mem-fraction-static={evidence_mem_fraction}. The artifact "
-            f"cannot self-assert an unverified mem-fraction policy."
-        )
-    if declared_prefix_cache_disabled and not evidence_prefix_cache_disabled:
-        raise LaunchPolicyMismatch(
-            f"Eval CLI declares prefix_cache_disabled=True but preflight "
-            f"launch_command for {container_name} does not include "
-            f"--disable-radix-cache. The artifact cannot self-assert an "
-            f"unverified prefix-cache policy."
-        )
-
-    return evidence_mem_fraction, evidence_prefix_cache_disabled, False
-
-
 def _load_dataset_revisions(revisions_path: str | None) -> dict[str, str]:
     """Load the per-repo dataset revision dict for the metadata block."""
     from benchmarks.dataset.mmmu import _load_revision_map
@@ -241,27 +149,8 @@ def _build_run_metadata(
     config: MMMUEvalConfig,
     *,
     request_results: list | None = None,
-    steady_state_gpu_gb: list[float] | None = None,
 ) -> dict:
-    """Populate the run-metadata block from authoritative sources.
-
-    - ``model_revision`` and ``container_image_digest``: merged from
-      ``preflight.json`` when ``config.preflight_json`` is set (the
-      preflight gate is the source of truth for these). Otherwise falls
-      back to live ``docker inspect``.
-    - ``dataset_revisions``: loaded from
-      ``benchmarks/dataset/mmmu_revisions.json`` (or
-      ``config.dataset_revisions`` override).
-    - ``mem_fraction_static_configured`` and ``prefix_cache_disabled``:
-      sourced from the explicit CLI flags so they reflect the launch
-      contract, not a per-eval guess.
-    - ``kv_cache_capacity_tokens``: regex-scraped from
-      ``config.launcher_log`` when provided.
-    - ``steady_state_gpu_gb``: passed in by the caller after sampling at
-      ``warmup_complete + 30s`` (or freshly sampled if not provided).
-    - ``failure_count``: derived from ``request_results`` (count of
-      ``not is_success``).
-    """
+    """Populate the run-metadata block emitted alongside each result JSON."""
     from benchmarks.scripts.run_metadata import (
         RunMetadata,
         get_commit_sha,
@@ -269,8 +158,6 @@ def _build_run_metadata(
         get_current_branch,
         get_gpu_topology,
         get_sglang_version,
-        sample_gpu_memory_used_gb,
-        scrape_kv_cache_capacity_from_log,
         to_dict,
     )
 
@@ -283,46 +170,9 @@ def _build_run_metadata(
     container_image = (
         "frankleeeee/sglang-omni:dev"
         if config.backend == "omni"
-        else "lmsysorg/sglang"
+        else "lmsysorg/sglang:dev"
     )
-
-    preflight = _load_preflight_merge(config.preflight_json)
-    preflight_models = (preflight.get("model_revisions") or {})
-    preflight_containers = (preflight.get("containers") or {})
-    model_repo = (
-        "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-        if config.backend == "omni"
-        else "Qwen/Qwen3-VL-30B-A3B-Instruct"
-    )
-    model_revision = preflight_models.get(model_repo)
-    container_digest = (
-        preflight_containers.get(container_name, {}).get("container_image_digest")
-    )
-    if container_digest is None:
-        container_digest = get_container_image_digest(container_name)
-
-    (
-        mem_fraction_evidence,
-        prefix_cache_disabled_evidence,
-        claimed_unverified,
-    ) = _derive_launch_policy_from_preflight(
-        preflight,
-        container_name,
-        declared_mem_fraction=config.mem_fraction_static,
-        declared_prefix_cache_disabled=config.prefix_cache_disabled,
-        preflight_supplied=bool(config.preflight_json),
-    )
-
     dataset_revisions = _load_dataset_revisions(config.dataset_revisions)
-
-    if config.launcher_log:
-        kv_capacity = scrape_kv_cache_capacity_from_log(Path(config.launcher_log))
-    else:
-        kv_capacity = None
-
-    if steady_state_gpu_gb is None:
-        # Caller didn't pre-sample at warmup+30s; fall back to a right-now sample.
-        steady_state_gpu_gb = sample_gpu_memory_used_gb()
 
     failure_count = 0
     if request_results is not None:
@@ -334,7 +184,6 @@ def _build_run_metadata(
         sglang_version=get_sglang_version(),
         backend=config.backend,
         model_id=config.model,
-        model_revision=model_revision,
         dataset_revisions=dataset_revisions,
         seed=config.seed,
         ignore_eos=config.ignore_eos,
@@ -350,15 +199,10 @@ def _build_run_metadata(
         timeout_s=config.timeout_s,
         repo_id=config.repo_id,
         max_samples=config.max_samples,
-        mem_fraction_static_configured=mem_fraction_evidence,
-        kv_cache_capacity_tokens=kv_capacity,
-        steady_state_gpu_gb=steady_state_gpu_gb,
-        prefix_cache_disabled=prefix_cache_disabled_evidence,
-        encoder_patches_active=False,
         host=os.environ.get("HOSTNAME") or os.environ.get("HOST"),
         container_name=container_name,
         container_image=container_image,
-        container_image_digest=container_digest,
+        container_image_digest=get_container_image_digest(container_name),
         server_port=config.port,
         gpu_topology=get_gpu_topology(),
         repetition_index=config.repetition_index,
@@ -409,38 +253,12 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
             timeout_s=config.timeout_s,
-            # Streaming runs use read_bufsize=1 per the plan's literal
-            # parser contract: per-chunk SSE arrivals are visible to the
-            # parser immediately, without a prefetch window coalescing them.
+            # read_bufsize=1: SSE chunks visible to the parser immediately, no prefetch coalescing.
             read_bufsize=1 if config.stream else None,
         )
     )
 
-    # Schedule a steady-state GPU memory sample for warmup_complete + 30s.
-    # The sampler thread is launched from BenchmarkRunner's post-warmup
-    # hook so its 30s sleep is anchored at warmup completion, not at run
-    # start (which would include the warmup wall time).
-    steady_state_gpu_holder: dict[str, list[float]] = {"value": []}
-    sampler_thread_holder: dict[str, threading.Thread | None] = {"thread": None}
-
-    def _sample_gpu_after_warmup() -> None:
-        time.sleep(30)
-        from benchmarks.scripts.run_metadata import sample_gpu_memory_used_gb
-
-        steady_state_gpu_holder["value"] = sample_gpu_memory_used_gb()
-
-    def _start_sampler_post_warmup() -> None:
-        thread = threading.Thread(target=_sample_gpu_after_warmup, daemon=True)
-        thread.start()
-        sampler_thread_holder["thread"] = thread
-
-    request_results = await runner.run(
-        samples, send_fn, post_warmup_hook=_start_sampler_post_warmup
-    )
-    # Wait for the warmup+30s GPU sample before building run_metadata.
-    if sampler_thread_holder["thread"] is not None:
-        sampler_thread_holder["thread"].join(timeout=35)
-
+    request_results = await runner.run(samples, send_fn)
     per_sample = build_mmmu_result_records(samples, request_results, lane=config.lane)
     summary = compute_mmmu_metrics(per_sample)
     speed_metrics = compute_speed_metrics(
@@ -465,11 +283,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "repetition_index": config.repetition_index,
     }
 
-    run_metadata = _build_run_metadata(
-        config,
-        request_results=request_results,
-        steady_state_gpu_gb=steady_state_gpu_holder["value"] or None,
-    )
+    run_metadata = _build_run_metadata(config, request_results=request_results)
     results = {
         "summary": summary,
         "speed": speed_metrics,
@@ -505,11 +319,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
                 f"requires --max-tokens 256 (got {args.max_tokens}). Either drop "
                 f"the override or switch to --lane A."
             )
-        if args.ignore_eos is False:
-            # ignore_eos is implied by Lane B and cannot be opted out of.
-            # We accept --ignore-eos as a no-op redundancy but never let it
-            # land False here.
-            pass
+        # Lane B forces ignore_eos=True; --ignore-eos is accepted as no-op redundancy.
         ignore_eos = True
         max_tokens = 256
     elif lane == "A":
@@ -552,10 +362,6 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         reps=args.reps,
         repetition_index=args.repetition_index,
         dataset_revisions=args.dataset_revisions,
-        preflight_json=args.preflight_json,
-        launcher_log=args.launcher_log,
-        mem_fraction_static=args.mem_fraction_static,
-        prefix_cache_disabled=args.prefix_cache_disabled,
     )
 
 
@@ -705,49 +511,8 @@ def main() -> None:
         default=None,
         help=(
             "Path to the per-repo dataset revision JSON. Defaults to "
-            "benchmarks/dataset/mmmu_revisions.json. The loader fails closed "
-            "when the chosen repo lacks an entry; populate it via the "
-            "preflight gate."
-        ),
-    )
-    parser.add_argument(
-        "--preflight-json",
-        type=str,
-        default=None,
-        help=(
-            "Path to the preflight gate's JSON output. When provided, the "
-            "eval merges model_revision and container_image_digest from "
-            "the preflight record instead of recomputing them."
-        ),
-    )
-    parser.add_argument(
-        "--launcher-log",
-        type=str,
-        default=None,
-        help=(
-            "Path to the server launcher log. When provided, the eval "
-            "scrapes kv_cache_capacity_tokens from it into the run-metadata block."
-        ),
-    )
-    parser.add_argument(
-        "--mem-fraction-static",
-        type=float,
-        default=None,
-        help=(
-            "Configured mem_fraction_static at server launch (passed through "
-            "to the run-metadata block). The eval does NOT enforce this on "
-            "the server; the operator must have launched the server with "
-            "the matching --mem-fraction-static flag."
-        ),
-    )
-    parser.add_argument(
-        "--prefix-cache-disabled",
-        action="store_true",
-        default=True,
-        help=(
-            "Record that prefix caching is disabled (default: True). The "
-            "operator must have launched the server with prefix caching "
-            "actually disabled; this flag records the policy in metadata."
+            "benchmarks/dataset/mmmu_revisions.json. Loader fails closed when "
+            "the requested repo lacks an entry."
         ),
     )
     args = parser.parse_args()
