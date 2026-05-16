@@ -152,7 +152,21 @@ class TorchProfiler(ProfilerBase):
                 return None
 
             base_path = f"{cls._trace_template}_rank{rank}"
+            json_file = f"{base_path}.trace.json"
             gz_path = f"{base_path}.trace.json.gz"
+
+            # The schedule's on_trace_ready fires only on a schedule transition,
+            # which never happens because nothing in the pipeline runtime calls
+            # TorchProfiler.step(). Export the chrome trace explicitly here so
+            # the captured CUDA events actually land on disk before we destroy
+            # the profiler.
+            try:
+                os.makedirs(os.path.dirname(json_file), exist_ok=True)
+                cls._profiler.export_chrome_trace(json_file)
+                subprocess.Popen(["gzip", "-f", json_file])
+                logger.info("[Rank %s] Trace exported to %s.gz", rank, json_file)
+            except Exception as e:
+                logger.warning("[Rank %s] export_chrome_trace failed: %s", rank, e)
 
             try:
                 cls._profiler.stop()
