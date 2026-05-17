@@ -103,9 +103,7 @@ def stage_process_main(
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     if not spec.stage_specs:
-        raise ValueError(
-            f"Process {spec.process_name!r} requires at least one stage"
-        )
+        raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_process.{spec.process_name}")
 
     try:
