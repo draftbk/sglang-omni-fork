@@ -48,10 +48,32 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
     assert _stage(config, "code2wav").gpu == 1
-    assert _stage(config, "thinker").process == "thinker"
-    assert _stage(config, "talker_ar").process == "talker"
-    assert _stage(config, "code2wav").process == "talker"
+    assert config.placement.require_memory_fraction_for_colocation is False
+    assert {stage.name: stage.process for stage in config.stages} == {
+        "preprocessing": "preprocessing",
+        "image_encoder": "image_encoder",
+        "audio_encoder": "audio_encoder",
+        "mm_aggregate": "mm_aggregate",
+        "thinker": "thinker",
+        "decode": "decode",
+        "talker_ar": "talker_ar",
+        "code2wav": "code2wav",
+    }
     assert "code_predictor" not in {stage.name for stage in config.stages}
+
+    plan = build_stage_placement_plan(config)
+    topology = build_process_topology_plan(config, plan)
+
+    assert [group.name for group in topology.groups] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    ]
 
 
 def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:

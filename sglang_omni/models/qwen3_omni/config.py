@@ -7,7 +7,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -180,14 +180,14 @@ def _speech_stages(
 
 
 _SPEECH_DEFAULT_PROCESSES = {
-    "preprocessing": "thinker",
-    "image_encoder": "thinker",
-    "audio_encoder": "thinker",
-    "mm_aggregate": "thinker",
+    "preprocessing": "preprocessing",
+    "image_encoder": "image_encoder",
+    "audio_encoder": "audio_encoder",
+    "mm_aggregate": "mm_aggregate",
     "thinker": "thinker",
-    "decode": "thinker",
-    "talker_ar": "talker",
-    "code2wav": "talker",
+    "decode": "decode",
+    "talker_ar": "talker_ar",
+    "code2wav": "code2wav",
 }
 
 _SPEECH_COLOCATED_PROCESSES = {
@@ -227,6 +227,11 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
     stages: list[StageConfig] = Field(
         default_factory=lambda: _speech_stages(
             thinker_gpu=0,
