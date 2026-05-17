@@ -174,6 +174,8 @@ def find_free_tcp_ports(start: int, count: int) -> list[int]:
                 s.bind(("127.0.0.1", port))
                 ports.append(port)
         except OSError:
+            # Port is already bound or otherwise unbindable; advance to the
+            # next candidate.
             pass
         port += 1
     return ports
@@ -220,9 +222,3 @@ def allocate_endpoints(
         return endpoints
 
     raise ValueError(f"Unknown endpoint scheme: {config.endpoints.scheme}")
-
-
-_build_relay_config = build_relay_config
-_parse_gpu_id = parse_gpu_id
-_find_free_tcp_ports = find_free_tcp_ports
-_allocate_endpoints = allocate_endpoints

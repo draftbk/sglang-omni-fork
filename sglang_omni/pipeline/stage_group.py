@@ -21,10 +21,23 @@ logger = logging.getLogger(__name__)
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
-    for stage_spec in spec.stage_specs:
-        if stage_spec.tp_size > 1:
-            return get_stage_process_env(stage_spec)
-    return {}
+    """Return the spawn-time env overrides for *spec*.
+
+    Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
+    exclusively — its CUDA env remap and NCCL settings depend on being the
+    sole tenant. Mixing a TP stage with any other stage in the same
+    process group is a placement bug, not a fallback case.
+    """
+    tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
+    if not tp_stages:
+        return {}
+    if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
+        raise AssertionError(
+            f"Process {spec.process_name!r} mixes a TP stage with other "
+            "stages; TP stages must own their OS process exclusively. "
+            f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
+        )
+    return get_stage_process_env(tp_stages[0])
 
 
 @contextmanager

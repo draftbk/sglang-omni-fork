@@ -97,49 +97,30 @@ class StageWorkerProcessSpec:
 
 
 def stage_process_main(
-    spec: StageProcessSpec | StageWorkerProcessSpec,
+    spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    process_spec = _normalize_worker_process_spec(spec)
-    log = logging.getLogger(f"stage_process.{process_spec.process_name}")
+    if not spec.stage_specs:
+        raise ValueError(
+            f"Process {spec.process_name!r} requires at least one stage"
+        )
+    log = logging.getLogger(f"stage_process.{spec.process_name}")
 
     try:
-        for stage_spec in process_spec.stage_specs:
+        for stage_spec in spec.stage_specs:
             _prepare_cuda_environment(stage_spec, log)
-        _run_process(process_spec, ready_event, log)
+        _run_process(spec, ready_event, log)
     except Exception:
         import traceback
 
         log.error(
             "Stage process %s failed:\n%s",
-            process_spec.process_name,
+            spec.process_name,
             traceback.format_exc(),
         )
         sys.exit(1)
-
-
-def _normalize_worker_process_spec(
-    spec: StageProcessSpec | StageWorkerProcessSpec,
-) -> StageWorkerProcessSpec:
-    if isinstance(spec, StageWorkerProcessSpec):
-        if not spec.stage_specs:
-            raise ValueError(
-                f"Process {spec.process_name!r} requires at least one stage"
-            )
-        return spec
-    return StageWorkerProcessSpec(
-        process_name=_default_process_name(spec),
-        stage_specs=[spec],
-        gpu_id=spec.gpu_id,
-    )
-
-
-def _default_process_name(spec: StageProcessSpec) -> str:
-    if spec.tp_size > 1:
-        return f"{spec.stage_name}_tp{spec.tp_rank}"
-    return spec.stage_name
 
 
 def _run_process(
@@ -147,6 +128,20 @@ def _run_process(
     ready_event: multiprocessing.Event,
     log: logging.Logger,
 ) -> None:
+    """Construct and drive all stages owned by one OS process.
+
+    Multi-stage semantics (since the topology PR):
+    - All stages in ``spec.stage_specs`` share this OS process and one asyncio
+      event loop. ``asyncio.gather`` runs them concurrently; **if any stage
+      raises, the whole process exits** and ``MultiProcessPipelineRunner``'s
+      ``_monitor_children`` will fail-all in-flight requests on the
+      coordinator. There is no per-stage failure isolation inside one process
+      group.
+    - Scheduler construction is serialized by :func:`gpu_startup_lock` per GPU
+      inside :func:`_construct_scheduler` — so when N stages on the same GPU
+      live in this process, cold-start time degrades from ``max`` to ``sum``
+      across them.
+    """
     stages = [_construct_stage(stage_spec, log) for stage_spec in spec.stage_specs]
 
     async def _start_and_run():

@@ -25,18 +25,12 @@ from sglang_omni.config.topology import (
     ProcessTopologyPlan,
     build_process_topology_plan,
 )
-from sglang_omni.pipeline.runtime_config import (
-    IpcRuntimeDir,
-    PipelineRuntimePrep,
-    create_ipc_runtime_dir,
-    prepare_pipeline_runtime,
-)
+
+# Runtime helpers (IpcRuntimeDir, prepare_pipeline_runtime, etc.) live in
+# ``sglang_omni.pipeline.runtime_config`` and must be imported from there
+# directly. Re-exporting them here would create a ``config → pipeline`` cycle.
 
 __all__ = [
-    "IpcRuntimeDir",
-    "PipelineRuntimePrep",
-    "create_ipc_runtime_dir",
-    "prepare_pipeline_runtime",
     "StagePlacement",
     "GpuPlacement",
     "StagePlacementPlan",
