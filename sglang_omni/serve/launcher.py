@@ -37,11 +37,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
-from sglang_omni.config import (
-    PipelineConfig,
-    build_process_topology_plan,
-    build_stage_placement_plan,
-)
+from sglang_omni.config import PipelineConfig
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
