@@ -18,9 +18,14 @@ Pipelines are declared with `PipelineConfig` and `StageConfig`.
 Example:
 
 ```python
+# Every non-TP stage must declare `process` explicitly — there is no implicit
+# default. Each stage below runs in its own OS process; multiple stages can
+# share an OS process by giving them the same `process` value (see
+# `Qwen3OmniSpeechColocatedPipelineConfig` for that pattern).
 stages = [
     StageConfig(
         name="preprocessing",
+        process="preprocessing",
         factory="...create_preprocessing_executor",
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
         project_payload={
@@ -31,6 +36,7 @@ stages = [
     ),
     StageConfig(
         name="mm_aggregate",
+        process="mm_aggregate",
         factory="...create_aggregate_executor",
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         merge_fn="...merge_for_thinker",
@@ -38,15 +44,22 @@ stages = [
     ),
     StageConfig(
         name="thinker",
+        process="thinker",
         factory="...create_sglang_thinker_executor_from_config",
         factory_args={"speech_enabled": True},
         gpu=0,
         next=["decode", "talker_ar"],
         stream_to=["talker_ar"],
     ),
-    StageConfig(name="decode", factory="...create_decode_executor", terminal=True),
+    StageConfig(
+        name="decode",
+        process="decode",
+        factory="...create_decode_executor",
+        terminal=True,
+    ),
     StageConfig(
         name="code2wav",
+        process="code2wav",
         factory="...create_code2wav_scheduler",
         gpu=1,
         terminal=True,
@@ -130,10 +143,11 @@ Serving uses `MultiProcessPipelineRunner` for both single-process and
 multi-process topologies. Runtime prep first resolves GPU placement, then
 process topology:
 
-- if no stage declares `process`, legacy defaults are preserved;
-- legacy single-process placement becomes one process group containing all
-  non-TP stages;
-- legacy multi-process placement becomes one process group per non-TP stage;
+- every non-TP stage must declare `process` explicitly — there is no implicit
+  default. Configs saved before this refactor are not auto-migrated: set
+  `process="pipeline"` on every non-TP stage to recover the historical
+  single-process behavior, or use any other shared/distinct process name to
+  opt into the declarative multi-stage-per-process layout;
 - explicit `stage.process` groups non-TP stages declaratively.
 
 A process group may contain CPU stages and stages on at most one GPU. Multiple
@@ -169,8 +183,12 @@ StageConfig(
 
 For `tp_size > 1`, the runner derives one process per TP rank. Each process runs
 the stage scheduler and model worker with a different `tp_rank` and GPU. NCCL
-collectives inside model forward keep TP ranks in lockstep. TP stages must not
-set `process`; they do not share rank processes with other logical stages.
+collectives inside model forward keep TP ranks in lockstep. `StageConfig.process`
+is optional for TP stages; if set, it acts as the prefix for the derived
+per-rank process names (`{process}_tp{rank}`); if unset, the stage name is used
+as the prefix. TP ranks always own their OS process exclusively — a TP stage's
+process group cannot host any other stage, regardless of whether `process` is
+set or unset.
 
 Only rank 0 owns external stage IO:
 
