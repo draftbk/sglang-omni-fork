@@ -805,6 +805,7 @@ class OmniScheduler:
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                time.sleep(0.001)
                 continue
 
             batch = self.get_next_batch_to_run()
@@ -828,6 +829,7 @@ class OmniScheduler:
                     pop_and_process()
             elif batch is None:
                 self.self_check_during_idle()
+                time.sleep(0.001)
 
             if self.is_generation:
                 self.launch_batch_sample_if_needed(batch_result)
