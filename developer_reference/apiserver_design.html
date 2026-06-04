@@ -33,8 +33,8 @@
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=3c74b3bc" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
   
   <!-- So that users can add custom icons -->
   <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
@@ -50,7 +50,8 @@
     <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'developer_reference/apiserver_design';</script>
-    <link rel="icon" href="https://docs.sglang.io/_static/logo.ico"/>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=621ec60e"></script>
+    <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Pipeline Overview" href="pipeline.html" />
@@ -58,7 +59,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.0" />
-    <meta name="docbuild:last-update" content="May 17, 2026"/>
+    <meta name="docbuild:last-update" content="Jun 04, 2026"/>
   </head>
   
   
@@ -137,8 +138,8 @@
       
     
     
-    <img src="https://docs.sglang.io/_static/logo.png" class="logo__image only-light" alt="SGLang - Home"/>
-    <img src="https://docs.sglang.io/_static/logo.png" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
   
   
 </a></div>
@@ -153,12 +154,21 @@
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Get Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3 TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Basic Usage</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_s2pro.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">Omni Router Usage</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
@@ -172,6 +182,7 @@
 <li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Config</a></li>
 <li class="toctree-l1"><a class="reference internal" href="communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiler.html">Request-level profiler</a></li>
 </ul>
 
     </div>
@@ -231,7 +242,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sgl-project.github.io" target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
    class="btn btn-sm btn-source-repository-button dropdown-item"
    title="Source repository"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -248,7 +259,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sgl-project.github.io/blob/main/developer_reference/apiserver_design.md?plain=1" target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/apiserver_design.md?plain=1" target="_blank"
    class="btn btn-sm btn-source-file-button dropdown-item"
    title="Show source"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -265,7 +276,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sgl-project.github.io/edit/main/developer_reference/apiserver_design.md" target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/developer_reference/apiserver_design.md" target="_blank"
    class="btn btn-sm btn-source-edit-button dropdown-item"
    title="Suggest edit"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -282,7 +293,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sgl-project.github.io/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/apiserver_design.html&body=Your%20issue%20content%20here." target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/apiserver_design.html&body=Your%20issue%20content%20here." target="_blank"
    class="btn btn-sm btn-source-issues-button dropdown-item"
    title="Open an issue"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -537,17 +548,40 @@
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/start_profile</span></code></p></td>
-<td><p>Added by the single-process built-in launcher</p></td>
+<td><p>Torch trace + (optional) request-level events. Added by the built-in launcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/stop_profile</span></code></p></td>
-<td><p>Added by the single-process built-in launcher</p></td>
+<td><p>Stops both torch trace and request-level events</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/start_request_profile</span></code></p></td>
+<td><p>Request-level event recorder only (no torch trace)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">POST</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/stop_request_profile</span></code></p></td>
+<td><p>Stops the request-level event recorder</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <p>The profiling routes are mounted by the single-process <code class="docutils literal notranslate"><span class="pre">launch_server()</span></code> path. The
 current multi-process launcher path does not mount them.</p>
+<p><code class="docutils literal notranslate"><span class="pre">/start_profile</span></code> accepts:</p>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span>{
+  &quot;run_id&quot;: &quot;demo-run&quot;,
+  &quot;trace_path_template&quot;: &quot;/tmp/profiles/demo-run/trace&quot;,  // torch trace template
+  &quot;event_dir&quot;: &quot;/tmp/profiles/demo-run/events&quot;,            // request-event JSONL dir (optional)
+  &quot;enable_torch&quot;: true                                     // set false to skip torch trace
+}
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">/stop_profile</span></code> and <code class="docutils literal notranslate"><span class="pre">/stop_request_profile</span></code> both accept an optional
+<code class="docutils literal notranslate"><span class="pre">run_id</span></code>. Omitting it is a wildcard: every stage stops whatever profiler
+session is currently active.</p>
+<p>Request-level events are emitted as JSON lines under
+<code class="docutils literal notranslate"><span class="pre">&lt;event_dir&gt;/events_&lt;stage&gt;_&lt;pid&gt;.jsonl</span></code>. Use <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">sglang_omni.profiler</span> <span class="pre">&lt;event_dir&gt;</span></code> to derive the timeline / stage / hop reports described in
+<code class="docutils literal notranslate"><span class="pre">docs/developer_reference/profiler.md</span></code>.</p>
 </section>
 <section id="request-mapping">
 <h2>Request Mapping<a class="headerlink" href="#request-mapping" title="Link to this heading">#</a></h2>
@@ -634,9 +668,19 @@ to an <code class="docutils literal notranslate"><span class="pre">OmniRequest</
 </ul>
 <p>For non-streaming requests, <code class="docutils literal notranslate"><span class="pre">Client.speech()</span></code> collects audio chunks, encodes
 them, and returns raw audio bytes to the HTTP layer.</p>
-<p>For <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, the route returns SSE events. Each event carries a
+<p>For <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, the default route returns SSE events. Each event carries a
 base64-encoded audio chunk and format metadata; the stream ends with a final
 chunk carrying <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code> followed by <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code>.</p>
+<p>Raw PCM streaming is opt-in through <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;audio&quot;</span></code> plus
+<code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code>. That path emits <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> bytes directly and does
+not carry SSE metadata, usage, or a <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code> sentinel. The HTTP response
+headers are derived from the first audio chunk and subsequent chunks must keep
+the same sample rate. TTS chunk-timing knobs such as
+<code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> are forwarded as request params so model schedulers
+can consume them without changing Stage, Coordinator, or Relay. Raw PCM speech
+defaults <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> to <code class="docutils literal notranslate"><span class="pre">1</span></code> when the client does not provide a
+value; SSE keeps the model’s normal chunking unless the client explicitly sets
+the knob.</p>
 </section>
 </section>
 </section>
@@ -740,7 +784,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on May 17, 2026.
+  Last updated on Jun 04, 2026.
   <br/>
 </p>
   </div>
