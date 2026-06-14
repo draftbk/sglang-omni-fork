@@ -291,6 +291,11 @@ def assert_speed_thresholds(
 
 DEFAULT_TOTAL_AUDIO_DURATION_RTOL = 0.12
 
+# Streaming must not raise corpus WER nor lower mean speaker similarity beyond these
+# (absolute) tolerances vs non-streaming. See assert_streaming_quality_parity.
+DEFAULT_STREAMING_WER_ABS_TOL = 0.02
+DEFAULT_STREAMING_SPEAKER_SIM_ABS_TOL = 0.02
+
 
 def _request_by_id(requests: list[dict]) -> dict:
     return {
@@ -412,6 +417,57 @@ def assert_streaming_consistency(
             total_audio_duration_rtol,
             checks,
         )
+    _assert_metric_collector_if_local(collector, checks)
+
+
+def mismatched(run_a: dict[str, str], run_b: dict[str, str]) -> list[str]:
+    """IDs whose hashed audio differs between two runs — the precondition that
+    *licenses* a streaming-vs-non-streaming comparison. Used for both walls:
+        determinism = mismatched(run1, run2)         # same mode, same seed, x2
+        cross-mode  = mismatched(nonstream, stream)   # greedy: should match
+    Empty list == OK. If non-empty, REFUSE to compare (the run is not reproducible /
+    the paths diverge) rather than emit a delta that is really sampling noise. Hash
+    the ASSEMBLED audio, not raw SSE bytes (chunk framing differs run to run).
+    """
+    return sorted(k for k in run_a if k in run_b and run_a[k] != run_b[k])
+
+
+def assert_streaming_quality_parity(
+    non_stream: dict[str, dict],
+    stream: dict[str, dict],
+    *,
+    wer_abs_tol: float = DEFAULT_STREAMING_WER_ABS_TOL,
+    speaker_sim_abs_tol: float = DEFAULT_STREAMING_SPEAKER_SIM_ABS_TOL,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    """Assert streaming does not degrade quality vs non-streaming, PER UTTERANCE.
+
+    Complements ``assert_streaming_consistency`` (which checks only *amount* —
+    completion-token count and audio duration). ``non_stream`` / ``stream`` map
+    ``sample_id -> {"wer": .., "speaker_sim": ..}`` for the same utterances generated
+    both ways. Fails if ANY utterance's WER rises or speaker similarity drops beyond
+    tolerance under streaming — so a LOCALIZED regression (a single cut-off / repeated
+    / drifted utterance) is caught, not averaged away as a corpus mean would.
+
+    Validity precondition: generation must be GREEDY + same-seed, so a per-utterance
+    delta is attributable to streaming and not to sampling. Gate this with the
+    determinism and cross-mode walls (see ``mismatched``) and REFUSE if they fail.
+    """
+    checks = _metric_collector(collector, "streaming quality parity")
+    for sample_id in sorted(set(non_stream) & set(stream)):
+        ns, st = non_stream[sample_id], stream[sample_id]
+        if "wer" in ns and "wer" in st:
+            checks.check(
+                st["wer"] - ns["wer"] <= wer_abs_tol,
+                f"{sample_id}: streaming WER {st['wer']:.3f} is worse than "
+                f"non-streaming {ns['wer']:.3f} by more than {wer_abs_tol}",
+            )
+        if "speaker_sim" in ns and "speaker_sim" in st:
+            checks.check(
+                ns["speaker_sim"] - st["speaker_sim"] <= speaker_sim_abs_tol,
+                f"{sample_id}: streaming speaker similarity {st['speaker_sim']:.3f} is "
+                f"below non-streaming {ns['speaker_sim']:.3f} by more than {speaker_sim_abs_tol}",
+            )
     _assert_metric_collector_if_local(collector, checks)
 
 
