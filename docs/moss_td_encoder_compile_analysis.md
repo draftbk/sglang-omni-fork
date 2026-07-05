@@ -77,7 +77,22 @@ It is **not** a free win — the benefit is invisible and the costs are real and
 
 **Verdict: do not enable.** The trade is ~0.06% e2e (unmeasurable) against repeated 21–87 s stalls and some outright request failures.
 
-Even a *hardened* variant is not worth it: removing the stalls would require compiling **every** `n_chunks` shape at startup (long audio spans dozens of shapes → dozens × ~87 s of boot-time compile), and avoiding the crashes would require an eager fallback (`try/except`). That is a lot of warmup + fallback machinery for a ~0.06% e2e gain.
+### Can startup warmup fix the stalls?
+
+Warmup (compiling with dummy inputs at boot, as CUDA-graph capture already does) is the right tool for the first-compile stall — but it only partly helps here.
+
+**What warmup solves**
+
+- **Cost 1 (first-call stall):** compiling at startup moves the 21–87 s off the request path → no cold-start TTFT spike.
+
+**What warmup does *not* solve**
+
+- **Varying shapes.** The encoder input is `[n_chunks, 128, 3000]` and `n_chunks` grows with audio length (1 for ≤30 s … dozens for long audio). Warmup would have to compile **every** `n_chunks` value → dozens × ~87 s of **boot-time** compile, and any shape not pre-warmed still stalls at runtime.
+  - This would be a non-issue **if `dynamic=True` generalized across the batch dim** (one warmup covering all `n_chunks`). Empirically it did **not**: batch=16 triggered a recompile that raised `InductorError`. So per-shape warmup is unavoidable here.
+- **Crashes (Cost 3).** Shapes that fail to compile (e.g. batch=16) would now fail at startup instead of at request time — still requires an eager fallback (`try/except`) to stay serviceable.
+- **Dispatch overhead (Cost 4)** and the **~0.06% e2e ceiling** are unchanged.
+
+**Net:** warmup downgrades the problem from "recurring runtime stalls / 500s" to "slow boot + still needs eager fallback + still ~0.06% gain." It makes encoder compile *deployable*, not *worthwhile*. The prerequisite for a clean solution — `dynamic=True` generalizing over `n_chunks` — does not hold on this model.
 
 ## Conclusion
 
