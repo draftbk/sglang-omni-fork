@@ -62,6 +62,23 @@ Profiler idle-fraction: 0.42 (eager) → 0.20 (compiled) — compile does trim k
 | **CUDA graph** | removes the ~1.35 ms launch/dispatch → ~10 ms | Targets the one thing compile can't at batch=1; needs static shapes (a captured graph per `n_chunks`), and it's ~1 ms of an 11 ms encode. |
 | **`torch.compile`** | ~0 measured | Not worth it: no speedup + per-shape recompile/crash + 21–87 s warmup. |
 
+## Should the encoder be `torch.compile`d? (cost / benefit)
+
+It is **not** a free win — the benefit is invisible and the costs are real and recurring:
+
+| | detail |
+|---|---|
+| **Benefit** | GPU-busy −7% (~0.7 ms), kernel count 78k → 59k. **End-to-end: ~0.06%** (encoder is ~1% of e2e; 0.7 ms is within the ~11 ms encode's noise and offset by dispatch overhead). Not measurable. |
+| **Cost 1 — first-compile stall** | 21–87 s the first time each input shape is seen → a cold-start TTFT spike. |
+| **Cost 2 — recompile per shape** | `n_chunks` varies per request; `dynamic=True` does not generalize the batch dim, so every new audio length triggers another ~87 s stall — a **recurring** latency spike throughout serving, not a one-time cost. |
+| **Cost 3 — crashes on some shapes** | batch=16 raised `InductorError` → HTTP 500. Not even robust across shapes. |
+| **Cost 4 — dispatch overhead** | compiled path adds CPU guard/dispatch overhead at batch=1 that cancels the ~0.7 ms GPU saving. |
+| **Cost 5 — maintenance** | compiled path + guards, sensitive to dynamo/inductor versions. |
+
+**Verdict: do not enable.** The trade is ~0.06% e2e (unmeasurable) against repeated 21–87 s stalls and some outright request failures.
+
+Even a *hardened* variant is not worth it: removing the stalls would require compiling **every** `n_chunks` shape at startup (long audio spans dozens of shapes → dozens × ~87 s of boot-time compile), and avoiding the crashes would require an eager fallback (`try/except`). That is a lot of warmup + fallback machinery for a ~0.06% e2e gain.
+
 ## Conclusion
 
 The Whisper encoder is a small, already-well-optimized slice (~1% of end-to-end). `torch.compile` correctly fuses the little that is fuseable, but the dominant GEMM+flash is untouchable and the net is within noise. For MOSS-Transcribe-Diarize the throughput/latency bottleneck is **LLM decode**, not the encoder — optimization effort (including the decode-side `torch.compile` path) belongs there.
