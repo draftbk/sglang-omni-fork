@@ -8,8 +8,8 @@
 Applying `torch.compile` to the Whisper encoder is a **wash (~0 end-to-end), not a regression** — because there is almost nothing for it to speed up:
 
 - **~67% of encoder GPU time is already-optimal GEMM (cuBLAS) + flash-attention.** Compile leaves these kernels byte-identical.
-- Compile *does* fuse the remaining ~33% (LayerNorm / GELU / residual-add) and eliminates the permute/reshape **memory copies** — cutting GPU-busy ~9.85 → 9.14 ms (~7%).
-- That ~7% (~0.7 ms) is **within run-to-run noise of the ~11 ms encode** and is offset by compile's own CPU dispatch/guard overhead at batch=1 → **no measurable warm speedup**.
+- Compile *does* give a **real but tiny** win: it fuses the remaining ~33% (LayerNorm / GELU / residual-add) and eliminates the permute/reshape **memory copies**, cutting GPU-busy ~9.85 → 9.14 ms (**~7%**, ~0.7 ms) and kernel count (78k → 59k trace events).
+- But that ~0.7 ms is **within run-to-run noise of the ~11 ms encode** and is offset by compile's own CPU dispatch/guard overhead at batch=1 → **no measurable warm speedup** (11.2 ms both). And ~0.7 ms of a ~1%-of-e2e encoder is ~0.06% of end-to-end.
 - It is **not** a graph-coverage problem: the encoder compiles into **1 graph, 0 graph breaks**.
 - The encoder is **~1% of end-to-end** (11 ms encode vs 1–2 s LLM decode), so even a hypothetical 2× encoder moves e2e < 1%.
 
