@@ -66,6 +66,15 @@ Profiler idle-fraction: 0.42 (eager) → 0.20 (compiled) — compile does trim k
 
 The Whisper encoder is a small, already-well-optimized slice (~1% of end-to-end). `torch.compile` correctly fuses the little that is fuseable, but the dominant GEMM+flash is untouchable and the net is within noise. For MOSS-Transcribe-Diarize the throughput/latency bottleneck is **LLM decode**, not the encoder — optimization effort (including the decode-side `torch.compile` path) belongs there.
 
+### Chrome traces
+
+Raw profiler traces (20 warm encoder iters each, batch=1) are attached:
+
+- `docs/traces/moss_td_encoder_eager.json.gz` — eager (~78k events)
+- `docs/traces/moss_td_encoder_compiled.json.gz` — `torch.compile` (~59k events; fewer events = fused kernels)
+
+View them by dragging the `.json.gz` (no need to decompress) into **https://ui.perfetto.dev** or `chrome://tracing`. The eager timeline shows the separate `layer_norm` / `add` / `copy` / `contiguous` kernels; the compiled timeline shows them collapsed into `triton_*_fused_*` kernels, while the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
+
 ### How to reproduce
 
 Instrumentation was env-gated in `get_audio_feature` (not committed):
