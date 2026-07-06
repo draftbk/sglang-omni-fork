@@ -78,13 +78,23 @@ The encoder-level −15–20% is real and now visibly reaches server-side encode
 
 ### Reference implementation (gated, off by default)
 
-The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`: one `self._enc = self.whisper_encoder` in `__init__`, the call site uses `self._enc(...)`, and a single `warmup_encoder_compile()` method that (only when `MOSS_ENCODER_COMPILE=1`) does the compile + warms each chunk-count bucket:
+The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`. The compile decision sits right where the encoder is built (`__init__`), the call site uses `self._enc(...)`, and `warmup_encoder_compile()` just pre-triggers the per-shape compilation at startup:
 
 ```python
+# __init__, right after the encoder is created:
+self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
+if os.getenv("MOSS_ENCODER_COMPILE") == "1":
+    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+else:
+    self._enc = self.whisper_encoder
+
+# call site:
+whisper_features = self._enc(input_features, encoder_position_ids, forward_batch)
+
+# startup (wire into the stage factory if you flip the flag):
 def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
     if os.getenv("MOSS_ENCODER_COMPILE") != "1":
         return
-    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
     cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
@@ -93,7 +103,7 @@ def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
                               device=p.device, dtype=p.dtype), pos, None)
 ```
 
-Because warmup is mandatory anyway (**enabling compile without it stalls the first request of each new audio length ~20–87 s**), the warmup *is* the single place that compiles — no separate lazy gate needed. `dynamic=False` avoids the torch 2.11 inductor crash. It's a no-op unless the flag is set and the stage factory calls it at startup, so it's a ready-to-flip option, not a default.
+Notes: `torch.compile` is lazy (it compiles on the first forward per shape), so wrapping in `__init__` before weights load is safe — `load_weights` targets the untouched `self.whisper_encoder` and the compiled wrapper shares the same tensors. **Warmup is mandatory** — without it the first request of each new audio length stalls ~20–87 s. `dynamic=False` avoids the torch 2.11 inductor crash. All no-ops unless the flag is set, so it's a ready-to-flip option, not a default.
 
 ### Chrome traces
 `docs/traces/moss_td_encoder_{eager,compiled}.json.gz` — the compiled one is `dynamic=False` (the recommended-if-you-must config). Drag into https://ui.perfetto.dev (no decompress needed). Eager ~78k events vs compiled ~59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.

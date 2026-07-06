@@ -78,13 +78,23 @@ encoder 层面的 −15~20% 是真的、现在也确实体现在了 server 端�
 
 ### 参考实现(gated,默认关)
 
-真正"加 compile"的代码只有 **~12 行**,在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:`__init__` 里一句 `self._enc = self.whisper_encoder`,调用点用 `self._enc(...)`,再加一个 `warmup_encoder_compile()` 方法 —— 只有 `MOSS_ENCODER_COMPILE=1` 时才编译 + 预热每个 chunk-count 桶:
+真正"加 compile"的代码只有 **~12 行**,在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`。compile 的决定就放在 encoder 创建处(`__init__`),调用点用 `self._enc(...)`,`warmup_encoder_compile()` 只负责在启动时按形状预触发编译:
 
 ```python
+# __init__,紧跟在 encoder 创建之后:
+self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
+if os.getenv("MOSS_ENCODER_COMPILE") == "1":
+    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+else:
+    self._enc = self.whisper_encoder
+
+# 调用点:
+whisper_features = self._enc(input_features, encoder_position_ids, forward_batch)
+
+# 启动时(要开这个 flag 就接到 stage 工厂里):
 def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
     if os.getenv("MOSS_ENCODER_COMPILE") != "1":
         return
-    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
     cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
@@ -93,7 +103,7 @@ def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
                               device=p.device, dtype=p.dtype), pos, None)
 ```
 
-因为 warmup 本来就必须做(**启用 compile 却不 warmup,每个新音频长度的第一个请求会卡 ~20–87 s**),所以让 warmup **独占"编译"这一步** —— 不需要单独的 lazy 门。`dynamic=False` 规避 torch 2.11 的 inductor 崩溃。flag 未设、或 stage 工厂不在启动时调用它,就是 no-op —— 所以是"随时可开"的选项,而非默认。
+说明:`torch.compile` 是惰性的(首次前向、按形状才真正编译),所以在 `__init__`、权重加载前 wrap 是安全的 —— `load_weights` 作用于未动的 `self.whisper_encoder`,编译后的 wrapper 共享同一批 tensor。**warmup 是必须的** —— 不做的话每个新音频长度的第一个请求会卡 ~20–87 s。`dynamic=False` 规避 torch 2.11 的 inductor 崩溃。flag 未设时全是 no-op —— 是"随时可开"的选项,而非默认。
 
 ### Chrome traces
 `docs/traces/moss_td_encoder_{eager,compiled}.json.gz` —— compiled 那个是 `dynamic=False`(推荐-如果非做不可 的配置)。直接拖进 https://ui.perfetto.dev,无需解压。eager ~78k 事件 vs compiled ~59k(kernel 被融合);两者的 `ampere_bf16_gemm` 和 `flash_fwd_kernel` 行完全一样。
