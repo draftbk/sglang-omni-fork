@@ -76,8 +76,16 @@ encoder 层面的 −15~20% 是真的、现在也确实体现在了 server 端�
 
 `torch._dynamo.explain`:**graphs=1, graph_breaks=0, ops=344**(encoder 的 self-attention 是 `scaled_dot_product_attention`,完全可 trace——不是 RadixAttention)。
 
+### 参考实现(gated,默认关)
+
+真正"加 compile"的代码在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:
+- `_encoder()` —— 当 `MOSS_ENCODER_COMPILE=1` 时返回 `torch.compile(self.whisper_encoder, dynamic=False)`,否则返回 eager encoder(关闭时行为完全一致)。
+- `warmup_encoder_compile(chunk_buckets=(1,2,4,8,16,32))` —— 启动时把每个 chunk-count 形状预编译一遍,这样没有请求会吃到编译卡顿。**是的,启用 compile 就必须做这个 warmup** —— 否则每个新音频长度的第一个请求会卡 ~20–87 s。如果你要打开这个 flag,把它接到 stage 工厂的启动里。
+
+两者在 flag 未设时都是 no-op,所以这是一个"随时可开"的选项,而非默认。
+
 ### Chrome traces
-`docs/traces/moss_td_encoder_{eager,compiled}.json.gz`(直接拖进 https://ui.perfetto.dev,无需解压)。eager 78k 事件 vs compiled 59k(kernel 被融合);两者的 `ampere_bf16_gemm` 和 `flash_fwd_kernel` 行完全一样。
+`docs/traces/moss_td_encoder_{eager,compiled}.json.gz` —— compiled 那个是 `dynamic=False`(推荐-如果非做不可 的配置)。直接拖进 https://ui.perfetto.dev,无需解压。eager ~78k 事件 vs compiled ~59k(kernel 被融合);两者的 `ampere_bf16_gemm` 和 `flash_fwd_kernel` 行完全一样。
 
 ### 复现
 ```

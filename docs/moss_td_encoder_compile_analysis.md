@@ -76,8 +76,16 @@ The encoder-level −15–20% is real and now visibly reaches server-side encode
 
 `torch._dynamo.explain`: **graphs=1, graph_breaks=0, ops=344** (encoder self-attention is `scaled_dot_product_attention`, fully traceable — not RadixAttention).
 
+### Reference implementation (gated, off by default)
+
+The actual "add compile" change lives in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:
+- `_encoder()` — returns `torch.compile(self.whisper_encoder, dynamic=False)` when `MOSS_ENCODER_COMPILE=1`, else the eager encoder (behavior-identical when off).
+- `warmup_encoder_compile(chunk_buckets=(1,2,4,8,16,32))` — pre-compiles each chunk-count shape at startup so no request pays the compile stall. **Yes, enabling compile requires this warmup** — otherwise the first request of each new audio length stalls ~20–87 s. Wire it into the stage factory's startup if you flip the flag.
+
+Both are no-ops with the flag unset, so this is a ready-to-flip option, not a default.
+
 ### Chrome traces
-`docs/traces/moss_td_encoder_{eager,compiled}.json.gz` (drag into https://ui.perfetto.dev — no decompress needed). Eager 78k events vs compiled 59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
+`docs/traces/moss_td_encoder_{eager,compiled}.json.gz` — the compiled one is `dynamic=False` (the recommended-if-you-must config). Drag into https://ui.perfetto.dev (no decompress needed). Eager ~78k events vs compiled ~59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
 
 ### Reproduce
 ```
