@@ -73,7 +73,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         super().__init__()
         self.config = config
         self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
-        self._enc = self.whisper_encoder  # swapped to a compiled encoder by warmup_encoder_compile()
+        self._enc = self.whisper_encoder
         self.vq_adaptor = VQAdaptor(
             input_dim=config.adaptor_input_dim,
             hidden_size=config.text_config.hidden_size,
@@ -101,10 +101,6 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         )
 
     def warmup_encoder_compile(self, buckets: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)):
-        """Enable + warm up encoder torch.compile (OFF unless MOSS_ENCODER_COMPILE=1).
-        Compiles once per chunk-count bucket at startup so no request pays the
-        ~20-87s compile stall. dynamic=False avoids a torch 2.11 inductor crash.
-        See docs/moss_td_encoder_compile_analysis.md (default off: ~1% e2e)."""
         if os.getenv("MOSS_ENCODER_COMPILE") != "1":
             return
         self._enc = torch.compile(self.whisper_encoder, dynamic=False)
