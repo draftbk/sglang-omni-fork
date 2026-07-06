@@ -6,7 +6,7 @@
 
 ## Summary
 
-This adds an **opt-in, off-by-default** `torch.compile(dynamic=False)` path for the Whisper encoder, gated by `MOSS_ENCODER_COMPILE=1`, with per-shape warmup wired into startup. It is a real, measured throughput win:
+This adds an **opt-in, off-by-default** `torch.compile(dynamic=False)` path for the Whisper encoder, gated by the stage's `enable_torch_compile` server arg (same flag `fishaudio_s2_pro` uses), with per-shape warmup wired into startup. It is a real, measured throughput win:
 
 - **+20% on the isolated encoder** (CUDA-event, N=50).
 - **+3.8% end-to-end throughput @ c=8** and **+5.3% @ c=16** — non-overlapping across runs, at **matched output length** (see the fairness check below).
@@ -16,12 +16,17 @@ It is off by default because it has real costs (per-shape compile/warmup, versio
 
 ## How to enable
 
-```
-MOSS_ENCODER_COMPILE=1                 # wrap the encoder in torch.compile(dynamic=False)
-MOSS_ENCODER_COMPILE_BUCKETS=1,2,4     # optional; n_chunks shapes to warm at startup (default: 1)
+Set `enable_torch_compile` in the stage's `factory_args` (pipeline config), matching how `fishaudio_s2_pro` compiles its decoder:
+
+```yaml
+factory_args:
+  enable_torch_compile: true
+  encoder_compile_buckets: [1, 2, 3, 4]   # n_chunks shapes to pre-warm (default)
 ```
 
-`warmup_encoder_compile()` is called from the stage factory after `init_device_graphs()`; it is a no-op unless the flag is set. Warmup is required — without it the first request of each new `n_chunks` shape stalls ~20–87 s. On 40 GB, warming large buckets can OOM (see costs), so the default warms only bucket `1` (movies800 is 1-chunk).
+The stage factory calls `compile_encoder(buckets)` — which does `set_torch_compile_config()`, `torch.compile(dynamic=False)`, and warms the buckets — then sets `server_args.enable_torch_compile = False` so sglang doesn't *also* compile the LLM decoder. (`torch_compile_max_bs` is required-by-validation and auto-set to `max_running_requests`, but is unused by the encoder.)
+
+**Buckets are the `n_chunks` axis (audio length), not concurrency** — the encoder runs per-request, so its batch dim is one request's chunk count (~audio-seconds/30), never the number of concurrent requests. Because `dynamic=False` compiles per **exact** shape, buckets must be a **contiguous** range: `1,2,3,4` covers ≤2 min audio exactly, while a gapped set like `1,2,4` leaves 3-chunk audio uncovered (it would stall + compile on first use, then cache). Audio longer than the top bucket pays that one-time compile. On 40 GB, warming large buckets OOMs, so raise the range only with `mem_fraction_static=0.5` for headroom.
 
 ## End-to-end throughput
 
@@ -67,7 +72,7 @@ Input is identical (same audio) and **output length matches within <0.1%** — c
 | **Benefit** | isolated encoder **−20%** (`dynamic=False`); **+3.8% throughput @ c=8, +5.3% @ c=16**. |
 | **Cost 1 — accuracy is not bitwise-identical** | CER +~0.05 abs (~1% rel), consistent across runs. Fused LayerNorm/GELU change FP reduction order → rare greedy token flips. Negligible for most uses, but real. |
 | **Cost 2 — compile per shape** | ~87 s cold / ~20 s warm-cache, **per distinct `n_chunks` shape**. Cached on disk (`/tmp/torchinductor_*`) across restarts, so *not* per-boot — but each unseen shape stalls its first request unless warmed at startup. |
-| **Cost 3 — warmup can OOM on 40 GB** | warming large-chunk buckets (16/32) OOMs after the KV pool is reserved; on movies800 (1-chunk) warming bucket `1` is enough. Long-audio deployments need bucket coverage + padding. |
+| **Cost 3 — warmup can OOM on 40 GB** | warming large-chunk buckets (16/32) OOMs after the KV pool is reserved; the default `(1,2,3,4)` is safe. Long-audio deployments raising the range need `mem_fraction_static=0.5` for headroom. |
 | **Cost 4 — version fragility** | `dynamic=True` raises `InductorError` in `tiling_utils.get_pw_red_splits` (torch 2.11 dynamic-shape bug) at larger chunk counts. `dynamic=False` avoids it and is faster — so use `dynamic=False`. |
 
 **Recommendation.** Enable it where throughput matters and a ~1%-relative CER shift is acceptable, using `dynamic=False` + startup warmup. **CUDA graph (separate work item) is a cheaper lever for the same class of gain** (near-instant capture, no ~87 s compile, no version crash, bitwise-identical), so prefer it for the encoder; `torch.compile` is a valid, now-supported alternative.
@@ -106,35 +111,33 @@ Compile wall: **~87 s cold / ~20 s warm-cache** (first call, per shape). CUDA gr
 
 `torch._dynamo.explain`: **graphs=1, graph_breaks=0, ops=344** (the encoder's self-attention is `scaled_dot_product_attention`, fully traceable — not RadixAttention).
 
-### Reference implementation (env-gated)
+### Reference implementation
 
-The "add compile" change lives in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py` (compile decision at `__init__`, call site uses `self.encoder_runner(...)`) and one warmup call in `stages.py`:
+`sglang_model.py` holds `compile_encoder()` (the call site uses `self.encoder_runner(...)`, which defaults to the plain encoder); `stages.py` triggers it, gated on `enable_torch_compile`, before `init_device_graphs()`:
 
 ```python
-# __init__, right after the encoder is built:
-self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
-if os.getenv("MOSS_ENCODER_COMPILE") == "1":
+# sglang_model.py — encoder_runner defaults to the plain encoder in __init__:
+self.encoder_runner = self.whisper_encoder
+
+def compile_encoder(self, buckets: Tuple[int, ...] = (1, 2, 3, 4)) -> None:
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+    set_torch_compile_config()
     self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
-else:
-    self.encoder_runner = self.whisper_encoder
-
-# call site:
-whisper_features = self.encoder_runner(input_features, encoder_position_ids, forward_batch)
-
-# warmup (called from the stage factory after init_device_graphs):
-def warmup_encoder_compile(self):
-    if os.getenv("MOSS_ENCODER_COMPILE") != "1":
-        return
-    buckets = tuple(int(x) for x in os.getenv("MOSS_ENCODER_COMPILE_BUCKETS", "1").split(","))
-    cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
+    cfg = self.config.audio_config
+    p = next(self.whisper_encoder.parameters())
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
-    for n in buckets:
+    for n in buckets:                                   # contiguous n_chunks range
         feats = torch.zeros(n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype)
         self.encoder_runner(feats, pos, None)
+
+# stages.py — after infra build, before init_device_graphs:
+if bool(server_args.enable_torch_compile):
+    model_worker.model_runner.model.compile_encoder(encoder_compile_buckets)
+    server_args.enable_torch_compile = False            # don't also compile the LLM decoder
 ```
 
-`torch.compile` is lazy (compiles on first forward per shape), so wrapping in `__init__` before weights load is safe — `load_weights` targets `self.whisper_encoder` and the compiled wrapper shares the same tensors. All no-ops unless the flag is set.
+`torch.compile` is lazy (compiles on first forward per shape). Wrapping after `load_weights` is fine — the compiled wrapper shares `self.whisper_encoder`'s tensors.
 
 ### Reproduce
 ```

@@ -6,7 +6,7 @@
 
 ## 摘要
 
-本 PR 为 Whisper encoder 加了一条**默认关闭、可选开启**的 `torch.compile(dynamic=False)` 路径,由 `MOSS_ENCODER_COMPILE=1` 控制,并在启动时按形状预热。这是一个真实、可测的吞吐提升:
+本 PR 为 Whisper encoder 加了一条**默认关闭、可选开启**的 `torch.compile(dynamic=False)` 路径,由 stage 的 `enable_torch_compile` server arg 控制(和 `fishaudio_s2_pro` 用的是同一个 flag),并在启动时按形状预热。这是一个真实、可测的吞吐提升:
 
 - **孤立 encoder +20%**(CUDA-event,N=50)。
 - **端到端吞吐 c=8 +3.8%、c=16 +5.3%** —— 多次运行区间不重叠,且**输出长度一致**(见下方公平性核对)。
@@ -16,12 +16,17 @@
 
 ## 如何开启
 
-```
-MOSS_ENCODER_COMPILE=1                 # 把 encoder 包进 torch.compile(dynamic=False)
-MOSS_ENCODER_COMPILE_BUCKETS=1,2,4     # 可选;启动时预热的 n_chunks 形状(默认:1)
+在 stage 的 `factory_args`(pipeline config)里设 `enable_torch_compile`,和 `fishaudio_s2_pro` 编译它的 decoder 是同一套:
+
+```yaml
+factory_args:
+  enable_torch_compile: true
+  encoder_compile_buckets: [1, 2, 3, 4]   # 要预热的 n_chunks 形状(默认)
 ```
 
-`warmup_encoder_compile()` 在 stage 工厂里 `init_device_graphs()` 之后被调用;flag 没开时是 no-op。**warmup 是必须的** —— 不做的话每个新 `n_chunks` 形状的第一个请求会卡 ~20–87 s。在 40 GB 上预热大 bucket 会 OOM(见代价),所以默认只预热 bucket `1`(movies800 是 1-chunk)。
+stage 工厂调 `compile_encoder(buckets)` —— 里面做 `set_torch_compile_config()`、`torch.compile(dynamic=False)`、并预热这些桶 —— 然后把 `server_args.enable_torch_compile = False`,免得 sglang 又去编译 LLM decoder。(`torch_compile_max_bs` 被校验强制要求、自动设为 `max_running_requests`,但 encoder 用不到它。)
+
+**bucket 是 `n_chunks` 轴(音频长度),不是并发** —— encoder 每请求单独跑,batch 维是**一条**请求的 chunk 数(约 音频秒数/30),永远不是并发请求数。因为 `dynamic=False` 按**精确**形状编译,bucket 必须是**连续区间**:`1,2,3,4` 精确覆盖 ≤2 分钟音频,而 `1,2,4` 这种带空档的会漏掉 3-chunk 音频(它会在首次请求现场编译 ~20–87 s,之后缓存)。比顶桶更长的音频付这一次性编译。40 GB 上预热大桶会 OOM,想调高区间要配 `mem_fraction_static=0.5` 腾余量。
 
 ## 端到端吞吐
 
@@ -67,7 +72,7 @@ MOSS_ENCODER_COMPILE_BUCKETS=1,2,4     # 可选;启动时预热的 n_chunks 形�
 | **收益** | 孤立 encoder **−20%**(`dynamic=False`);**吞吐 c=8 +3.8%、c=16 +5.3%**。 |
 | **成本 1——精度非逐位一致** | CER +~0.05 绝对(~1% 相对),多次运行一致。融合的 LayerNorm/GELU 改变了 FP 归约顺序 → greedy 下极少数 token 翻转。多数场景可忽略,但真实存在。 |
 | **成本 2——每形状编译** | ~87 s 冷 / ~20 s warm-cache,**每个不同 `n_chunks` 形状**一次。缓存到磁盘(`/tmp/torchinductor_*`)、跨重启复用,所以**不是每次启动都付**——但每个没见过的形状第一次会卡住那个请求(除非启动时预热)。 |
-| **成本 3——预热在 40 GB 上会 OOM** | KV pool 占满后预热大 bucket(16/32)会 OOM;movies800(1-chunk)预热 bucket `1` 就够。长音频部署需要桶覆盖 + padding。 |
+| **成本 3——预热在 40 GB 上会 OOM** | KV pool 占满后预热大 bucket(16/32)会 OOM;默认 `(1,2,3,4)` 安全。长音频部署调高区间需配 `mem_fraction_static=0.5` 腾余量。 |
 | **成本 4——版本脆弱** | `dynamic=True` 在大 chunk 数时抛 `InductorError`(`tiling_utils.get_pw_red_splits`,torch 2.11 动态形状 bug)。`dynamic=False` 规避且更快——所以用 `dynamic=False`。 |
 
 **建议。** 在乎吞吐、且能接受 ~1% 相对 CER 抖动的部署可以开,用 `dynamic=False` + 启动预热。但 **CUDA graph(单独工作项)是同类收益里更便宜的手段**(捕获近乎瞬时、无 ~87 s 编译、无版本崩溃、逐位一致),所以 encoder 优先选它;`torch.compile` 是一个可用、现已受支持的备选。
@@ -106,35 +111,33 @@ A100-40GB "跑不了 c=16" 其实是 **KV pool 过度预留**,不是真的显存
 
 `torch._dynamo.explain`:**graphs=1, graph_breaks=0, ops=344**(encoder 的 self-attention 是 `scaled_dot_product_attention`,完全可 trace——不是 RadixAttention)。
 
-### 参考实现(env-gated)
+### 参考实现
 
-"加 compile" 的代码在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`(compile 决定放在 `__init__`,调用点用 `self.encoder_runner(...)`),外加 `stages.py` 里一行 warmup 调用:
+`sglang_model.py` 里是 `compile_encoder()`(调用点用 `self.encoder_runner(...)`,默认指向未编译的 encoder);`stages.py` 触发它,gate 在 `enable_torch_compile` 上,放在 `init_device_graphs()` 之前:
 
 ```python
-# __init__,紧跟在 encoder 创建之后:
-self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
-if os.getenv("MOSS_ENCODER_COMPILE") == "1":
+# sglang_model.py —— __init__ 里 encoder_runner 默认指向未编译的 encoder:
+self.encoder_runner = self.whisper_encoder
+
+def compile_encoder(self, buckets: Tuple[int, ...] = (1, 2, 3, 4)) -> None:
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+    set_torch_compile_config()
     self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
-else:
-    self.encoder_runner = self.whisper_encoder
-
-# 调用点:
-whisper_features = self.encoder_runner(input_features, encoder_position_ids, forward_batch)
-
-# warmup(在 stage 工厂 init_device_graphs 之后调用):
-def warmup_encoder_compile(self):
-    if os.getenv("MOSS_ENCODER_COMPILE") != "1":
-        return
-    buckets = tuple(int(x) for x in os.getenv("MOSS_ENCODER_COMPILE_BUCKETS", "1").split(","))
-    cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
+    cfg = self.config.audio_config
+    p = next(self.whisper_encoder.parameters())
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
-    for n in buckets:
+    for n in buckets:                                   # 连续的 n_chunks 区间
         feats = torch.zeros(n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype)
         self.encoder_runner(feats, pos, None)
+
+# stages.py —— infra 建好后、init_device_graphs 之前:
+if bool(server_args.enable_torch_compile):
+    model_worker.model_runner.model.compile_encoder(encoder_compile_buckets)
+    server_args.enable_torch_compile = False            # 别再去编译 LLM decoder
 ```
 
-`torch.compile` 是惰性的(首次前向、按形状才编译),所以在 `__init__`、权重加载前 wrap 是安全的——`load_weights` 作用于 `self.whisper_encoder`,编译后的 wrapper 共享同一批 tensor。flag 未设时全是 no-op。
+`torch.compile` 是惰性的(首次前向、按形状才编译)。在 `load_weights` 之后 wrap 也没问题 —— 编译后的 wrapper 共享 `self.whisper_encoder` 的 tensor。
 
 ### 复现
 ```
