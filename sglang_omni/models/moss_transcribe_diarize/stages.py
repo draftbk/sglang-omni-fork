@@ -58,6 +58,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    encoder_torch_compile: bool = False,
     encoder_compile_buckets: Tuple[int, ...] = (1, 2, 3, 4),
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
@@ -116,9 +117,8 @@ def create_sglang_moss_transcribe_diarize_executor(
         model_arch_override="MossTranscribeDiarizeForConditionalGeneration",
     )
 
-    if bool(server_args.enable_torch_compile):
+    if encoder_torch_compile:
         model_worker.model_runner.model.compile_encoder(encoder_compile_buckets)
-        server_args.enable_torch_compile = False
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
