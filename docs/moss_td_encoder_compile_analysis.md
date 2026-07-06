@@ -1,5 +1,7 @@
 # Decision: don't enable `torch.compile` on the MOSS-Transcribe-Diarize Whisper encoder
 
+> 中文版: [moss_td_encoder_compile_analysis.zh.md](./moss_td_encoder_compile_analysis.zh.md)
+
 **Scope:** A100-40GB · bf16 · torch 2.11.0+cu130 · movies800 (~16 s clips). Reproduce with `scripts/profile_moss_encoder.py` (see end).
 
 ## Decision
