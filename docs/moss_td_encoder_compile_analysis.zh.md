@@ -38,8 +38,8 @@
 | 手段 | 实测 | 结论 |
 |---|---|---|
 | **Batching(批量)** | eager 11.3 ms @b1 → 7.5 ms/item @b16(~1.5×) | 单条收益最大,但 mm-embed 派发**每请求单独调一次** encoder(永远只有单个请求的 chunk),所以在 serving 路径上根本不 engage。 |
-| **CUDA graph** | **+15% @batch=1,+0% @batch=16**(实测,手动捕获 eager encoder) | 消掉 launch/dispatch 开销 —— 而这开销只在小 batch 存在(正是 encoder 的实际工况)。**比 compile 更便宜**(捕获几乎瞬时,无 ~87 s、不崩),所以是更好的 encoder 手段 —— 但仍需每形状一张 graph,且只是 ~2.4%-of-e2e 的 encoder 的 ~15%。 |
 | **`torch.compile`** | encoder −10%(`dynamic=True`)/ −20%(`dynamic=False`),e2e ~1% | 不值得(本文)——e2e 占比小 + 每形状编译。 |
+| **CUDA graph** | +15% @batch=1,+0% @batch=16(实测;此处仅用于**拆解** compile 的提升来源,见下) | 一个独立的 launch-overhead 手段,**不在本文(compile)范围内**(由单独的工作项负责)。列出只是为了说明 compile 在 batch=1 的提升里有多少来自 launch 开销、多少来自融合。 |
 
 ## 数据附录
 
@@ -92,4 +92,4 @@ HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 python scripts/profile_moss_encoder.py \
 
 ## 注意事项(Caveat)
 
-仅在 A100-40GB 上测过。在 H100/H200/B200 上 GEMM+flash 更快,固定的 launch/dispatch 开销在 encoder 里占比会**更大**——那时 CUDA-graph(以及 compile 削减 launch 的作用)可能更有意义。本结论限定在 A100 + torch 2.11 + 这种长音频负载;短音频 ASR 也会抬高 encoder 在 e2e 中的占比。
+仅在 A100-40GB 上测过。在 H100/H200/B200 上 GEMM+flash 更快,固定的 launch/dispatch 开销在 encoder 里占比会**更大**——那时 compile 削减 launch 的作用(以及单独负责的 CUDA-graph 手段)可能更有意义。本结论限定在 A100 + torch 2.11 + 这种长音频负载;短音频 ASR 也会抬高 encoder 在 e2e 中的占比。

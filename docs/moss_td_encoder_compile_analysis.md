@@ -38,8 +38,8 @@ Trading real per-shape compile cost + complexity for a ~0.5% e2e gain is not wor
 | lever | measured | verdict |
 |---|---|---|
 | **Batching** | eager 11.3 ms @b1 → 7.5 ms/item @b16 (~1.5×) | Biggest per-item win, but the mm-embed dispatch calls the encoder **once per request** (always a single request's chunks), so it doesn't engage on the serving path. |
-| **CUDA graph** | **+15% @batch=1, +0% @batch=16** (measured, manual capture of eager encoder) | Kills launch/dispatch overhead — which only exists at small batch (the encoder's actual regime). **Cheaper than compile** (capture is ~instant, no ~87 s, no crash), so it's the better encoder lever — but still needs a graph per shape and is ~15% of a ~2.4%-of-e2e encoder. |
 | **`torch.compile`** | −10% (`dynamic=True`) / −20% (`dynamic=False`) encoder, ~1% e2e | Not worth it (this doc) — small e2e share + per-shape compile. |
+| **CUDA graph** | +15% @batch=1, +0% @batch=16 (measured; used here only to *attribute* compile's win, below) | A separate launch-overhead lever, **out of scope for this compile-focused doc** (tracked as its own work item). Included only to show how much of compile's batch=1 win is launch overhead vs fusion. |
 
 ## Data appendix
 
@@ -92,4 +92,4 @@ The script instantiates the encoder alone (TP=1 init, random weights — timing 
 
 ## Caveat
 
-A100-40GB only. On H100/H200/B200 the GEMM+flash get faster, so the fixed launch/dispatch overhead becomes a **larger** fraction of the encoder — CUDA-graph (and compile's launch-trimming) could matter more there. This conclusion is scoped to A100 + torch 2.11 + this long-audio workload; short-audio ASR also raises the encoder's e2e share.
+A100-40GB only. On H100/H200/B200 the GEMM+flash get faster, so the fixed launch/dispatch overhead becomes a **larger** fraction of the encoder — so compile's launch-trimming (and the separately-tracked CUDA-graph lever) could matter more there. This conclusion is scoped to A100 + torch 2.11 + this long-audio workload; short-audio ASR also raises the encoder's e2e share.
