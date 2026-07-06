@@ -1,18 +1,26 @@
-# Decision: don't enable `torch.compile` on the MOSS-Transcribe-Diarize Whisper encoder
+# `torch.compile` on the MOSS-Transcribe-Diarize Whisper encoder: measured impact
 
 > 中文版: [moss_td_encoder_compile_analysis.zh.md](./moss_td_encoder_compile_analysis.zh.md)
 
-**Scope:** A100-40GB · bf16 · torch 2.11.0+cu130 · movies800 (~16 s clips). Reproduce with `scripts/profile_moss_encoder.py` (see end).
+**Scope:** A100-40GB · bf16 · torch 2.11.0+cu130 · movies800 (~16 s clips) · greedy. Reproduce with `scripts/profile_moss_encoder.py` (see end).
 
-## Decision
+## Summary
 
-**Do not enable encoder `torch.compile`.** It is not that compile fails — it genuinely speeds the *isolated* encoder up (**~10% `dynamic=True`, ~20% `dynamic=False`**, measured, N=50). We're declining it because:
+`torch.compile(dynamic=False)` on the Whisper encoder is a **real, correctness-preserving win**: **+20% on the isolated encoder** (N=50) and **+3.8% end-to-end throughput** (c=8, non-overlapping across 3 runs, CER unchanged). It's a legitimate optimization — but with caveats, and **CUDA graph (separately owned) is a cheaper lever for the same class of gain**, so for the encoder we lean CUDA graph.
 
-1. **The win is ~1% end-to-end — measured, both latency and throughput.** The encoder is only **~2.4% of a request** (encode 11 ms vs 465 ms total @c=1). Server before/after with `dynamic=False` (the encoder win *does* reach the server — encode 11→9.4 ms): c=1 latency 0.446→0.441 s (−1%), c=16 throughput 15.8→16.1 qps (+1.6%) — both within run-to-run noise.
-2. **It isn't free.** Cost is an ~87 s cold / ~20 s warm-cache compile **per distinct `n_chunks` shape** (audio length varies → many shapes), plus compiled dispatch/guard overhead and warmup machinery.
-3. **The bottleneck is elsewhere.** 67% of encoder GPU time is already-optimal cuBLAS GEMM + flash-attention; the real throughput/latency bottleneck is **LLM decode**.
+Caveats for enabling compile:
+- Needs a compile **per distinct `n_chunks` shape** (~20 s warm-cache / ~87 s cold each), warmed up at startup — and large-chunk buckets can **OOM the warmup on 40 GB**.
+- `dynamic=True` hits a torch 2.11 `InductorError` at larger chunk counts → use **`dynamic=False`**.
+- At **c=16 on 40 GB the card is OOM-limited** (completion 56–82/96), so the clean throughput comparison is at c=8.
 
-Trading real per-shape compile cost + complexity for a ~0.5% e2e gain is not worth it. (`dynamic=True` additionally hits a torch 2.11 `InductorError` at batch=16, but `dynamic=False` avoids that — so the crash is **not** the reason; the economics are.)
+## End-to-end throughput (c=8, greedy, fresh server per run, 96 samples)
+
+| | run1 / run2 / run3 | worst | mean | vs eager | CER |
+|---|---|---|---|---|---|
+| eager | 10.06 / 10.19 / 10.00 | 10.00 | 10.08 | — | 5.12 |
+| **compile (dynamic=False)** | 10.29 / 10.53 / 10.60 | 10.29 | **10.47** | **+3.8%** | 5.14 |
+
+Ranges **don't overlap** (comp worst 10.29 > eager best 10.19) → real, not noise; CER unchanged → outputs preserved. Fresh server per run is required — a persistent server's 2nd+ eval degrades (see the note at the end). Single-request latency @c=1 moves only ~1% (the encoder is ~2.4% of one request's latency); the **throughput** gain is larger because speeding prefill frees GPU for decode batching.
 
 ## Three arguments (each one number)
 
@@ -20,26 +28,26 @@ Trading real per-shape compile cost + complexity for a ~0.5% e2e gain is not wor
 
 2. **Two-thirds of encoder GPU time is already-optimal GEMM + flash-attention — compile can't touch it.** By Self-CUDA time: `addmm` (cuBLAS ampere tensor-core) **50%** and flash-attention **17%** are emitted **byte-identical** by compile (GEMM 98.7 vs 98.7 ms, flash 33.4 vs 33.2 ms). Only the remaining ~33% (LayerNorm/GELU/residual-add + permute copies) is fuseable.
 
-3. **Compile's real encoder win is swamped by e2e share and per-shape compile cost.** Isolated encode (CUDA-event, N=50): eager **11.3 ± 0.06 ms** → **10.3 ms (`dynamic=True`, 1.10×)** / **9.3 ms (`dynamic=False`, 1.20×)** — statistically real (it fuses the ~33% elementwise, GPU-busy 9.86→9.15 ms, trims launches, trace events 78k→59k). But even 20% × 2.4% ≈ **0.5% e2e**, against an ~87 s cold / ~20 s warm-cache compile **per distinct `n_chunks` shape**.
+3. **The isolated encoder speeds up ~20%, and it carries to +3.8% throughput.** Isolated encode (CUDA-event, N=50): eager **11.3 ± 0.06 ms** → **10.3 ms (`dynamic=True`, 1.10×)** / **9.3 ms (`dynamic=False`, 1.20×)** — statistically real (fuses the ~33% elementwise, GPU-busy 9.86→9.15 ms, trims launches, trace events 78k→59k). That 20% encoder win shows up as **+3.8% e2e throughput at c=8** (table above) — larger than the ~1% single-request-latency share, because prefill speedup frees GPU for decode batching. Cost: a compile per `n_chunks` shape (~20 s warm-cache).
 
-## Cost / benefit — why not to enable
+## Cost / benefit
 
 | | detail |
 |---|---|
-| **Benefit** | isolated encoder −10% (`dynamic=True`) to **−20% (`dynamic=False`)**; **e2e ~0.5%** (encoder is ~2.4% of e2e). |
-| **Cost 1 — compile stall per shape** | ~87 s cold, ~20 s warm-cache, **per distinct `n_chunks` shape**. Cached on disk (`/tmp/torchinductor_*`) across restarts, so it is *not* per-boot — but the first time each shape is seen it stalls that request, and `n_chunks` grows with audio length (dozens of shapes for long audio). |
-| **Cost 2 — the win is unmeasurable e2e** | with `dynamic=False` the −20% encoder win *does* reach server-side encode (11→9.4 ms), but at ~2.4% e2e share it is ~1% of the request — server c=1 latency and c=16 throughput both moved ~1%, inside run-to-run noise. (`dynamic=True` additionally has CPU guard/dispatch overhead that ate even the encode-level win.) |
-| **Not a cost: the batch=16 crash** | `dynamic=True` raises `InductorError` in `tiling_utils.get_pw_red_splits` (torch 2.11 dynamic-shape bug), but **`dynamic=False` compiles every shape cleanly and is faster** — so the crash is a config artifact, not a real blocker. |
+| **Benefit** | isolated encoder **−20%** (`dynamic=False`); **+3.8% e2e throughput** (c=8, clean, correctness-preserved). |
+| **Cost 1 — compile per shape** | ~87 s cold / ~20 s warm-cache, **per distinct `n_chunks` shape**. Cached on disk (`/tmp/torchinductor_*`) across restarts, so *not* per-boot — but each unseen shape stalls its first request unless warmed at startup, and `n_chunks` grows with audio length. |
+| **Cost 2 — warmup can OOM on 40 GB** | warming large-chunk buckets (16/32) at startup OOMs on 40 GB after the KV pool is reserved; on movies800 (1-chunk audio) warming just bucket `(1,)` is enough and cheap. Deployments with long audio need bucket coverage + padding. |
+| **Cost 3 — version fragility** | `dynamic=True` raises `InductorError` in `tiling_utils.get_pw_red_splits` (a torch 2.11 dynamic-shape bug) at larger chunk counts. `dynamic=False` avoids it and is faster — so use `dynamic=False`. |
 
-**Can startup warmup remove the stall?** Yes, mostly — with `dynamic=False` you'd compile each `n_chunks` shape at boot (dozens × ~20 s warm-cache) so no request stalls. That is a real, deployable path. It is just not *worth* the machinery for a ~0.5% e2e gain on a decode-bound workload.
+**Recommendation.** The encoder **is** worth optimizing (real +3.8% throughput, correctness-preserved). `torch.compile(dynamic=False)` delivers it with a per-shape startup warmup. But **CUDA graph is a cheaper lever for the same class of gain** (near-instant capture, no ~87 s compile, no version crash), so if you optimize the encoder, prefer CUDA graph; `torch.compile` is a valid alternative.
 
-## What actually moves the encoder (and why it's still not e2e)
+## Levers that move the encoder
 
-| lever | measured | verdict |
+| lever | measured | notes |
 |---|---|---|
-| **Batching** | eager 11.3 ms @b1 → 7.5 ms/item @b16 (~1.5×) | Biggest per-item win, but the mm-embed dispatch calls the encoder **once per request** (always a single request's chunks), so it doesn't engage on the serving path. |
-| **`torch.compile`** | −10% (`dynamic=True`) / −20% (`dynamic=False`) encoder, ~1% e2e | Not worth it (this doc) — small e2e share + per-shape compile. |
-| **CUDA graph** | +15% @batch=1, +0% @batch=16 (measured; used here only to *attribute* compile's win, below) | A separate launch-overhead lever, **out of scope for this compile-focused doc** (tracked as its own work item). Included only to show how much of compile's batch=1 win is launch overhead vs fusion. |
+| **`torch.compile(dynamic=False)`** | −20% encoder, **+3.8% e2e throughput (c=8)** | Real, correctness-preserved (this doc). Cost: per-shape startup warmup + version fragility. |
+| **CUDA graph** | +15% @batch=1, +0% @batch=16 | Cheaper lever for the same launch-overhead win; a **separate work item**, out of scope here. Shown to attribute how much of compile's batch=1 win is launch overhead vs fusion. |
+| **Batching** | eager 11.3 ms @b1 → 7.5 ms/item @b16 (~1.5×) | Biggest per-item win, but the mm-embed dispatch calls the encoder **once per request**, so it doesn't engage on the serving path today. |
 
 ## Data appendix
 
@@ -52,17 +60,17 @@ Trading real per-shape compile cost + complexity for a ~0.5% e2e gain is not wor
 
 Compile wall: **~87 s cold / ~20 s warm-cache** (first call, per shape). `dynamic=False` compiles every shape cleanly; `dynamic=True` recompiles per shape and crashes at batch=16. CUDA graph (`--cuda-graph`) helps only at batch=1 (launch-bound); at batch=16 the encoder is compute-saturated so removing launch overhead does nothing — while compile's batch=16 win is fusion/copy-elimination, not launches.
 
-### End-to-end server before/after (`compile(dynamic=False)`, encoder win reaches the server)
+### End-to-end (`compile(dynamic=False)`, fresh server per run, greedy, 96 samples)
 
-| | eager | compiled | Δ |
+| metric | eager | compiled | Δ |
 |---|---|---|---|
-| server-side encode | ~11 ms | **9.4 ms** | −15% (win *does* reach server) |
-| c=1 latency mean | 0.446 s | 0.441 s | −1% (noise) |
-| c=1 latency p95 | 0.897 s | 0.975 s | +8% (noise) |
-| c=16 throughput | 15.8 qps | 16.1 qps | +1.6% (within run-to-run noise) |
-| c=16 latency mean | 0.913 s | 0.892 s | −2.3% |
+| server-side encode | ~11 ms | 9.4 ms | −15% (win reaches the server) |
+| **throughput c=8** (worst/mean of 3) | 10.0 / 10.08 qps | **10.29 / 10.47 qps** | **+2.9% worst / +3.8% mean** (ranges non-overlapping) |
+| latency c=1 mean | 0.446 s | 0.441 s | −1% (encoder is ~2.4% of a single request) |
 
-The encoder-level −15–20% is real and now visibly reaches server-side encode — but e2e it is ~1% either way, consistent with the ~2.4% encoder share and inside run-to-run variance.
+**c=16 is not a clean comparison on 40 GB** — partial OOM (completion 56–82/96) makes throughput noise-dominated (nominal eager 13.1 / comp 12.5, but comp's low mean is one 56/96 OOM run, not a regression). The clean, non-OOM comparison is c=8 above.
+
+**Note — the server degrades after the first eval.** On a *persistent* server, the 2nd and later eval runs produce garbage output (a 96-sample greedy eval gave CER 5.0 as the first run, then 67.9 on identical reps). All numbers here use a **fresh server per run** (as does the CUDA-graph work). This looks like a state leak across eval boundaries (mm/radix cache or scheduler) and is worth a separate issue — it's independent of `torch.compile`.
 
 ### Kernel breakdown (torch.profiler, batch=1, 20 iters, Self-CUDA)
 
@@ -78,7 +86,7 @@ The encoder-level −15–20% is real and now visibly reaches server-side encode
 
 ### Reference implementation (gated, off by default)
 
-The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`. The compile decision sits right where the encoder is built (`__init__`), the call site uses `self._enc(...)`, and `warmup_encoder_compile()` just pre-triggers the per-shape compilation at startup:
+The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`. The compile decision sits right where the encoder is built (`__init__`), the call site uses `self.encoder_runner(...)`, and `warmup_encoder_compile()` just pre-triggers the per-shape compilation at startup:
 
 ```python
 # __init__, right after the encoder is created:
@@ -106,7 +114,7 @@ def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
 Notes: `torch.compile` is lazy (it compiles on the first forward per shape), so wrapping in `__init__` before weights load is safe — `load_weights` targets the untouched `self.whisper_encoder` and the compiled wrapper shares the same tensors. **Warmup is mandatory** — without it the first request of each new audio length stalls ~20–87 s. `dynamic=False` avoids the torch 2.11 inductor crash. All no-ops unless the flag is set, so it's a ready-to-flip option, not a default.
 
 ### Chrome traces
-`docs/traces/moss_td_encoder_{eager,compiled}.json.gz` — the compiled one is `dynamic=False` (the recommended-if-you-must config). Drag into https://ui.perfetto.dev (no decompress needed). Eager ~78k events vs compiled ~59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
+`docs/traces/moss_td_encoder_{eager,compiled}.json.gz` — the compiled one is `dynamic=False` (the recommended config). Drag into https://ui.perfetto.dev (no decompress needed). Eager ~78k events vs compiled ~59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
 
 ### Reproduce
 ```
