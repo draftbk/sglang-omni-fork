@@ -1,10 +1,16 @@
-# Does `torch.compile` help the MOSS-Transcribe-Diarize Whisper encoder?
+# Decision: don't enable `torch.compile` on the MOSS-Transcribe-Diarize Whisper encoder
 
-**Scope:** A100-40GB · bf16 · torch 2.11.0+cu130 · `torch.compile(dynamic=True)` · movies800 (~16 s clips). Reproduce with `scripts/profile_moss_encoder.py` (see end).
+**Scope:** A100-40GB · bf16 · torch 2.11.0+cu130 · movies800 (~16 s clips). Reproduce with `scripts/profile_moss_encoder.py` (see end).
 
-## Verdict
+## Decision
 
-**No — don't enable it (by default).** `torch.compile` *does* make the isolated encoder faster — **~10% with `dynamic=True`, ~20% with `dynamic=False`** (real, not noise) — but the encoder is only **~2.4% of end-to-end**, so even the 20% is **~0.5% of e2e**, and it costs an ~87 s cold / ~20 s warm-cache compile **per input shape** (and `n_chunks` varies per request). The bottleneck is **LLM decode**, not the encoder. (Note: `dynamic=True` also raises a hard `InductorError` at batch=16 — a torch 2.11 bug — but that is avoidable with `dynamic=False`, so it is *not* the reason against.)
+**Do not enable encoder `torch.compile`.** It is not that compile fails — it genuinely speeds the *isolated* encoder up (**~10% `dynamic=True`, ~20% `dynamic=False`**, measured, N=50). We're declining it because:
+
+1. **The win is ~0.5% end-to-end.** The encoder is only **~2.4% of a request** (encode 11 ms vs 465 ms total @c=1), so 20% of it is ~0.5% e2e — below request-latency noise, and it did **not** survive to request latency in the server path.
+2. **It isn't free.** Cost is an ~87 s cold / ~20 s warm-cache compile **per distinct `n_chunks` shape** (audio length varies → many shapes), plus compiled dispatch/guard overhead and warmup machinery.
+3. **The bottleneck is elsewhere.** 67% of encoder GPU time is already-optimal cuBLAS GEMM + flash-attention; the real throughput/latency bottleneck is **LLM decode**.
+
+Trading real per-shape compile cost + complexity for a ~0.5% e2e gain is not worth it. (`dynamic=True` additionally hits a torch 2.11 `InductorError` at batch=16, but `dynamic=False` avoids that — so the crash is **not** the reason; the economics are.)
 
 ## Three arguments (each one number)
 
