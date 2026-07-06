@@ -151,6 +151,24 @@ def _profile(fn, tag: str, trace_dir: str | None):
         print(f"[{tag}] chrome trace -> {path}")
 
 
+def _cuda_graph_times(enc, feats, pos_ids, warmup, iters):
+    """Capture the (eager) encoder into a CUDA graph and time replay. Isolates
+    the launch/dispatch-overhead win with NO inductor fusion."""
+    import torch
+
+    sf, sp = feats.clone(), pos_ids.clone()
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        for _ in range(3):
+            enc(sf, sp, None)
+    torch.cuda.current_stream().wait_stream(side)
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        enc(sf, sp, None)
+    return _timed(g.replay, warmup, iters)
+
+
 def _fmt(times):
     return f"{statistics.mean(times):.2f} +/- {statistics.pstdev(times):.2f} ms"
 
@@ -167,6 +185,8 @@ def main() -> None:
                     help="rm the on-disk inductor cache first -> measures COLD compile")
     ap.add_argument("--dynamic", choices=["true", "false", "auto"], default="true",
                     help="torch.compile dynamic= (auto -> None). false = static per-shape")
+    ap.add_argument("--cuda-graph", action="store_true",
+                    help="also time a manual CUDA-graph capture of the eager encoder")
     args = ap.parse_args()
     dynamic = {"true": True, "false": False, "auto": None}[args.dynamic]
 
@@ -190,6 +210,14 @@ def main() -> None:
 
         eager = _timed(lambda: enc(feats, pos_ids, None), args.warmup, args.iters)
         print(f"eager    : {_fmt(eager)}")
+
+        if args.cuda_graph:
+            try:
+                cg = _cuda_graph_times(enc, feats, pos_ids, args.warmup, args.iters)
+                print(f"cudagraph: {_fmt(cg)}  "
+                      f"(vs eager {statistics.mean(eager)/statistics.mean(cg):.3f}x)")
+            except Exception as e:  # noqa: BLE001
+                print(f"cudagraph: FAILED -> {type(e).__name__}: {str(e)[:160]}")
 
         try:
             compiled = torch.compile(enc, dynamic=dynamic)
