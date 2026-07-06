@@ -84,12 +84,12 @@ encoder 层面的 −15~20% 是真的、现在也确实体现在了 server 端�
 # __init__,紧跟在 encoder 创建之后:
 self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
 if os.getenv("MOSS_ENCODER_COMPILE") == "1":
-    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+    self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
 else:
-    self._enc = self.whisper_encoder
+    self.encoder_runner = self.whisper_encoder
 
 # 调用点:
-whisper_features = self._enc(input_features, encoder_position_ids, forward_batch)
+whisper_features = self.encoder_runner(input_features, encoder_position_ids, forward_batch)
 
 # 启动时(要开这个 flag 就接到 stage 工厂里):
 def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
@@ -99,8 +99,8 @@ def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
     for n in buckets:
-        self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
-                              device=p.device, dtype=p.dtype), pos, None)
+        feats = torch.zeros(n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype)
+        self.encoder_runner(feats, pos, None)
 ```
 
 说明:`torch.compile` 是惰性的(首次前向、按形状才真正编译),所以在 `__init__`、权重加载前 wrap 是安全的 —— `load_weights` 作用于未动的 `self.whisper_encoder`,编译后的 wrapper 共享同一批 tensor。**warmup 是必须的** —— 不做的话每个新音频长度的第一个请求会卡 ~20–87 s。`dynamic=False` 规避 torch 2.11 的 inductor 崩溃。flag 未设时全是 no-op —— 是"随时可开"的选项,而非默认。

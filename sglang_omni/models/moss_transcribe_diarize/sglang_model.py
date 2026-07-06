@@ -74,9 +74,9 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         self.config = config
         self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
         if os.getenv("MOSS_ENCODER_COMPILE") == "1":
-            self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+            self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
         else:
-            self._enc = self.whisper_encoder
+            self.encoder_runner = self.whisper_encoder
         self.vq_adaptor = VQAdaptor(
             input_dim=config.adaptor_input_dim,
             hidden_size=config.text_config.hidden_size,
@@ -110,8 +110,10 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         frames = int(cfg.max_source_positions) * 2
         pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
         for n in buckets:
-            self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
-                                  device=p.device, dtype=p.dtype), pos, None)
+            feats = torch.zeros(
+                n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype
+            )
+            self.encoder_runner(feats, pos, None)
 
     def _encode_one_audio_item(
         self,
@@ -160,7 +162,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             device=input_features.device,
             dtype=torch.long,
         )
-        whisper_features = self._enc(
+        whisper_features = self.encoder_runner(
             input_features,
             encoder_position_ids,
             forward_batch,

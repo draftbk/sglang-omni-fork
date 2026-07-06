@@ -84,12 +84,12 @@ The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_tra
 # __init__, right after the encoder is created:
 self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
 if os.getenv("MOSS_ENCODER_COMPILE") == "1":
-    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+    self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
 else:
-    self._enc = self.whisper_encoder
+    self.encoder_runner = self.whisper_encoder
 
 # call site:
-whisper_features = self._enc(input_features, encoder_position_ids, forward_batch)
+whisper_features = self.encoder_runner(input_features, encoder_position_ids, forward_batch)
 
 # startup (wire into the stage factory if you flip the flag):
 def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
@@ -99,8 +99,8 @@ def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
     frames = int(cfg.max_source_positions) * 2
     pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
     for n in buckets:
-        self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
-                              device=p.device, dtype=p.dtype), pos, None)
+        feats = torch.zeros(n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype)
+        self.encoder_runner(feats, pos, None)
 ```
 
 Notes: `torch.compile` is lazy (it compiles on the first forward per shape), so wrapping in `__init__` before weights load is safe — `load_weights` targets the untouched `self.whisper_encoder` and the compiled wrapper shares the same tensors. **Warmup is mandatory** — without it the first request of each new audio length stalls ~20–87 s. `dynamic=False` avoids the torch 2.11 inductor crash. All no-ops unless the flag is set, so it's a ready-to-flip option, not a default.
