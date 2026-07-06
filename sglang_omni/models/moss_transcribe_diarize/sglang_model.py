@@ -103,9 +103,12 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             batch_size, trimmed_len // merge_size, hidden_size * merge_size
         )
 
-    def warmup_encoder_compile(self, buckets: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)):
+    def warmup_encoder_compile(self):
         if os.getenv("MOSS_ENCODER_COMPILE") != "1":
             return
+        buckets = tuple(
+            int(x) for x in os.getenv("MOSS_ENCODER_COMPILE_BUCKETS", "1").split(",")
+        )
         cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
         frames = int(cfg.max_source_positions) * 2
         pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)

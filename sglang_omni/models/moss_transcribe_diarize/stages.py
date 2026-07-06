@@ -118,6 +118,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
 
+    model_worker.model_runner.model.warmup_encoder_compile()
+
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
 
     output_proc = SGLangOutputProcessor(
