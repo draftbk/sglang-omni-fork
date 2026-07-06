@@ -73,7 +73,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         super().__init__()
         self.config = config
         self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
-        self._compiled_encoder = None  # lazily set if encoder compile is enabled
+        self._enc = self.whisper_encoder  # swapped to a compiled encoder by warmup_encoder_compile()
         self.vq_adaptor = VQAdaptor(
             input_dim=config.adaptor_input_dim,
             hidden_size=config.text_config.hidden_size,
@@ -100,46 +100,20 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             batch_size, trimmed_len // merge_size, hidden_size * merge_size
         )
 
-    def _encoder(self):
-        """The whisper encoder, optionally ``torch.compile``d.
-
-        OFF by default. See docs/moss_td_encoder_compile_analysis.md: compiling
-        the encoder is ~10-20% faster in isolation but only ~1% end-to-end on
-        A100 (the encoder is ~2.4% of a request), so it is not enabled by
-        default. If you do enable it (``MOSS_ENCODER_COMPILE=1``):
-          * ``dynamic=False`` — static per-shape compile; avoids a torch 2.11
-            inductor bug that crashes ``dynamic=True`` at larger chunk counts.
-          * it recompiles per distinct chunk count (~87 s cold / ~20 s
-            warm-cache each), so call ``warmup_encoder_compile()`` at startup to
-            move that off the request path (otherwise the first request of each
-            new audio length stalls).
-        """
-        if os.getenv("MOSS_ENCODER_COMPILE") != "1":
-            return self.whisper_encoder
-        if self._compiled_encoder is None:
-            logger.info("compiling whisper_encoder (dynamic=False)")
-            self._compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
-        return self._compiled_encoder
-
-    def warmup_encoder_compile(
-        self, chunk_buckets: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)
-    ) -> None:
-        """Pre-compile the encoder for each chunk-count bucket so no request pays
-        the compile stall. No-op unless ``MOSS_ENCODER_COMPILE=1``. Wire this into
-        the stage factory's startup if you enable encoder compile."""
+    def warmup_encoder_compile(self, buckets: Tuple[int, ...] = (1, 2, 4, 8, 16, 32)):
+        """Enable + warm up encoder torch.compile (OFF unless MOSS_ENCODER_COMPILE=1).
+        Compiles once per chunk-count bucket at startup so no request pays the
+        ~20-87s compile stall. dynamic=False avoids a torch 2.11 inductor crash.
+        See docs/moss_td_encoder_compile_analysis.md (default off: ~1% e2e)."""
         if os.getenv("MOSS_ENCODER_COMPILE") != "1":
             return
-        enc = self._encoder()
-        param = next(self.whisper_encoder.parameters())
-        n_mel = int(self.config.audio_config.num_mel_bins)
-        frames = int(self.config.audio_config.max_source_positions) * 2
-        pos = torch.arange((frames - 1) // 2 + 1, device=param.device, dtype=torch.long)
-        for n in chunk_buckets:
-            feats = torch.zeros(n, n_mel, frames, device=param.device, dtype=param.dtype)
-            try:
-                enc(feats, pos, None)  # encoder path ignores forward_batch
-            except Exception as exc:  # noqa: BLE001 -- keep startup robust
-                logger.warning("encoder compile warmup failed for n=%d: %r", n, exc)
+        self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+        cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
+        frames = int(cfg.max_source_positions) * 2
+        pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
+        for n in buckets:
+            self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
+                                  device=p.device, dtype=p.dtype), pos, None)
 
     def _encode_one_audio_item(
         self,
@@ -188,7 +162,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             device=input_features.device,
             dtype=torch.long,
         )
-        whisper_features = self._encoder()(
+        whisper_features = self._enc(
             input_features,
             encoder_position_ids,
             forward_batch,

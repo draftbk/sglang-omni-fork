@@ -78,11 +78,22 @@ encoder 层面的 −15~20% 是真的、现在也确实体现在了 server 端�
 
 ### 参考实现(gated,默认关)
 
-真正"加 compile"的代码在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:
-- `_encoder()` —— 当 `MOSS_ENCODER_COMPILE=1` 时返回 `torch.compile(self.whisper_encoder, dynamic=False)`,否则返回 eager encoder(关闭时行为完全一致)。
-- `warmup_encoder_compile(chunk_buckets=(1,2,4,8,16,32))` —— 启动时把每个 chunk-count 形状预编译一遍,这样没有请求会吃到编译卡顿。**是的,启用 compile 就必须做这个 warmup** —— 否则每个新音频长度的第一个请求会卡 ~20–87 s。如果你要打开这个 flag,把它接到 stage 工厂的启动里。
+真正"加 compile"的代码只有 **~12 行**,在 `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:`__init__` 里一句 `self._enc = self.whisper_encoder`,调用点用 `self._enc(...)`,再加一个 `warmup_encoder_compile()` 方法 —— 只有 `MOSS_ENCODER_COMPILE=1` 时才编译 + 预热每个 chunk-count 桶:
 
-两者在 flag 未设时都是 no-op,所以这是一个"随时可开"的选项,而非默认。
+```python
+def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
+    if os.getenv("MOSS_ENCODER_COMPILE") != "1":
+        return
+    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+    cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
+    frames = int(cfg.max_source_positions) * 2
+    pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
+    for n in buckets:
+        self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
+                              device=p.device, dtype=p.dtype), pos, None)
+```
+
+因为 warmup 本来就必须做(**启用 compile 却不 warmup,每个新音频长度的第一个请求会卡 ~20–87 s**),所以让 warmup **独占"编译"这一步** —— 不需要单独的 lazy 门。`dynamic=False` 规避 torch 2.11 的 inductor 崩溃。flag 未设、或 stage 工厂不在启动时调用它,就是 no-op —— 所以是"随时可开"的选项,而非默认。
 
 ### Chrome traces
 `docs/traces/moss_td_encoder_{eager,compiled}.json.gz` —— compiled 那个是 `dynamic=False`(推荐-如果非做不可 的配置)。直接拖进 https://ui.perfetto.dev,无需解压。eager ~78k 事件 vs compiled ~59k(kernel 被融合);两者的 `ampere_bf16_gemm` 和 `flash_fwd_kernel` 行完全一样。

@@ -78,11 +78,22 @@ The encoder-level −15–20% is real and now visibly reaches server-side encode
 
 ### Reference implementation (gated, off by default)
 
-The actual "add compile" change lives in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`:
-- `_encoder()` — returns `torch.compile(self.whisper_encoder, dynamic=False)` when `MOSS_ENCODER_COMPILE=1`, else the eager encoder (behavior-identical when off).
-- `warmup_encoder_compile(chunk_buckets=(1,2,4,8,16,32))` — pre-compiles each chunk-count shape at startup so no request pays the compile stall. **Yes, enabling compile requires this warmup** — otherwise the first request of each new audio length stalls ~20–87 s. Wire it into the stage factory's startup if you flip the flag.
+The actual "add compile" change is **~12 lines** in `sglang_omni/models/moss_transcribe_diarize/sglang_model.py`: one `self._enc = self.whisper_encoder` in `__init__`, the call site uses `self._enc(...)`, and a single `warmup_encoder_compile()` method that (only when `MOSS_ENCODER_COMPILE=1`) does the compile + warms each chunk-count bucket:
 
-Both are no-ops with the flag unset, so this is a ready-to-flip option, not a default.
+```python
+def warmup_encoder_compile(self, buckets=(1, 2, 4, 8, 16, 32)):
+    if os.getenv("MOSS_ENCODER_COMPILE") != "1":
+        return
+    self._enc = torch.compile(self.whisper_encoder, dynamic=False)
+    cfg, p = self.config.audio_config, next(self.whisper_encoder.parameters())
+    frames = int(cfg.max_source_positions) * 2
+    pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
+    for n in buckets:
+        self._enc(torch.zeros(n, int(cfg.num_mel_bins), frames,
+                              device=p.device, dtype=p.dtype), pos, None)
+```
+
+Because warmup is mandatory anyway (**enabling compile without it stalls the first request of each new audio length ~20–87 s**), the warmup *is* the single place that compiles — no separate lazy gate needed. `dynamic=False` avoids the torch 2.11 inductor crash. It's a no-op unless the flag is set and the stage factory calls it at startup, so it's a ready-to-flip option, not a default.
 
 ### Chrome traces
 `docs/traces/moss_td_encoder_{eager,compiled}.json.gz` — the compiled one is `dynamic=False` (the recommended-if-you-must config). Drag into https://ui.perfetto.dev (no decompress needed). Eager ~78k events vs compiled ~59k (fused kernels); the `ampere_bf16_gemm` and `flash_fwd_kernel` rows are unchanged between the two.
