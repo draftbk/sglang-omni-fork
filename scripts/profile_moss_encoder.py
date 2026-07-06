@@ -165,7 +165,10 @@ def main() -> None:
                     help="if set, export chrome traces here (batch=1 only)")
     ap.add_argument("--clear-inductor-cache", action="store_true",
                     help="rm the on-disk inductor cache first -> measures COLD compile")
+    ap.add_argument("--dynamic", choices=["true", "false", "auto"], default="true",
+                    help="torch.compile dynamic= (auto -> None). false = static per-shape")
     args = ap.parse_args()
+    dynamic = {"true": True, "false": False, "auto": None}[args.dynamic]
 
     if args.clear_inductor_cache:
         for d in glob.glob("/tmp/torchinductor_*"):
@@ -189,7 +192,7 @@ def main() -> None:
         print(f"eager    : {_fmt(eager)}")
 
         try:
-            compiled = torch.compile(enc, dynamic=True)
+            compiled = torch.compile(enc, dynamic=dynamic)
             t0 = time.perf_counter()
             compiled(feats, pos_ids, None)
             torch.cuda.synchronize()
@@ -219,7 +222,7 @@ def main() -> None:
     if len(args.batches) > 1:
         print(f"\n{'='*64}\nrecompile probe: one compiled obj across batches "
               f"{args.batches}\n{'='*64}")
-        obj = torch.compile(enc, dynamic=True)
+        obj = torch.compile(enc, dynamic=dynamic)
         for batch in args.batches:
             f, p = _make_inputs(batch, n_mel)
             try:
